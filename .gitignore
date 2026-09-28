@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# PyInstaller & Build artifacts
+build/
+dist/
+*.spec
+
+# Local SSL Certificates
+certs/
+
+# Local configs and temp
+*.log
+.vscode/
+.idea/

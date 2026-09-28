@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Air-Gap QR Receiver & VirusTotal Scanner</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="pako.min.js"></script>
+  <script src="jsQR.min.js"></script>
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="logo">
+        <span class="icon">📡</span>
+        <h1>Air-Gap QR Receiver</h1>
+      </div>
+      <div class="header-actions">
+        <button id="btnSettings" class="icon-btn" title="Cài đặt API Key">⚙️</button>
+      </div>
+    </header>
+
+    <!-- Camera Viewport -->
+    <div class="scanner-section">
+      <div class="video-wrapper">
+        <video id="video" playsinline autoplay muted></video>
+        <canvas id="canvas" style="display: none;"></canvas>
+        <div class="scan-reticle">
+          <div class="reticle-corner top-left"></div>
+          <div class="reticle-corner top-right"></div>
+          <div class="reticle-corner bottom-left"></div>
+          <div class="reticle-corner bottom-right"></div>
+          <div class="laser-line"></div>
+        </div>
+        <div class="engine-badge" id="engineBadge">Detector: Starting...</div>
+      </div>
+
+      <div class="camera-controls">
+        <button id="btnSwitchCam" class="btn small-btn">🔄 Đổi Camera</button>
+        <button id="btnPauseCam" class="btn small-btn">⏸️ Tạm dừng</button>
+        <button id="btnResetScan" class="btn small-btn danger">🗑️ Quét lại</button>
+      </div>
+    </div>
+
+    <!-- Live Status & Metrics -->
+    <section class="metrics-card">
+      <div class="metric-row">
+        <div class="metric">
+          <span class="metric-label">Tệp đang nhận</span>
+          <span class="metric-val" id="valFileName">Chờ quét mã...</span>
+        </div>
+        <div class="metric">
+          <span class="metric-label">Tiến độ</span>
+          <span class="metric-val highlight" id="valProgress">0% (0/0)</span>
+        </div>
+      </div>
+
+      <!-- Progress Bar -->
+      <div class="progress-bar-container">
+        <div class="progress-bar-fill" id="progressBar"></div>
+      </div>
+
+      <div class="metric-row sub-metrics">
+        <span>Kích thước gốc: <strong id="valOrigSize">0 KB</strong></span>
+        <span>Tốc độ: <strong id="valFps">0 FPS</strong></span>
+      </div>
+
+      <div class="missing-chunks" id="missingChunksBox">
+        <span class="missing-label">Mảnh còn thiếu:</span>
+        <span id="missingChunksList">Chưa có dữ liệu</span>
+      </div>
+    </section>
+
+    <!-- Completion & VirusTotal Panel -->
+    <section class="result-card" id="resultCard" style="display: none;">
+      <div class="success-header">
+        <span class="success-icon">✅</span>
+        <div>
+          <h3>Truyền file thành công!</h3>
+          <p id="hashVerificationText">SHA-256: Kiểm tra khớp 100%</p>
+        </div>
+      </div>
+
+      <div class="action-buttons">
+        <button id="btnDownload" class="btn primary-btn">💾 Tải file về điện thoại</button>
+        <button id="btnManualVT" class="btn secondary-btn">🛡️ Quét lại VirusTotal</button>
+      </div>
+
+      <!-- VirusTotal Card -->
+      <div class="vt-box" id="vtBox">
+        <div class="vt-header">
+          <span class="vt-logo">🛡️ VirusTotal Report</span>
+          <span class="vt-badge" id="vtBadge">Đang kiểm tra...</span>
+        </div>
+        <div class="vt-score-display" id="vtScoreDisplay">
+          <div class="score-circle" id="scoreCircle">--</div>
+          <div class="score-details">
+            <h4 id="vtVerdict">Đang gửi yêu cầu tra cứu...</h4>
+            <p id="vtSummary">Vui lòng chờ trong giây lát</p>
+          </div>
+        </div>
+        <div class="vt-engine-list" id="vtEngineList" style="display: none;"></div>
+      </div>
+    </section>
+
+    <!-- Settings Modal -->
+    <div class="modal" id="settingsModal" style="display: none;">
+      <div class="modal-content">
+        <h3>Cài đặt VirusTotal</h3>
+        <p class="modal-desc">Nhập khóa API cá nhân (miễn phí từ virustotal.com) để phân tích mã độc trực tiếp.</p>
+        <div class="input-group">
+          <label for="apiKeyInput">VirusTotal API Key:</label>
+          <input type="text" id="apiKeyInput" placeholder="Dán API Key vào đây...">
+        </div>
+        <div class="modal-actions">
+          <button id="btnSaveKey" class="btn primary-btn">Lưu cấu hình</button>
+          <button id="btnCloseModal" class="btn secondary-btn">Đóng</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

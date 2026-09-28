@@ -1,0 +1,14 @@
+==================================================
+  AIR-GAP OPTICAL QR DATA TRANSFER TEST FILE
+==================================================
+Thong tin thu nghiem:
+- Giao thuc truyen: QRF1 (zlib level 9 + Base64 Packet Stream)
+- Thiet bi nhan: Mobile Web Scanner (Safari/Chrome Camera)
+- Tich hop an ninh: VirusTotal API v3 Engine Verification
+
+Noi dung kiem tra truyen file qua quang hoc:
+Day la mot file mau dung de kiem tra tinh toan ven SHA-256 sau khi truyen qua man hinh may tinh sang dien thoai di dong bang chuoi ma QR dong.
+Khong can cam cap USB, khong can internet ket noi truc tiep giua hai may!
+
+"Security is not a product, but a process." - Bruce Schneier
+==================================================
