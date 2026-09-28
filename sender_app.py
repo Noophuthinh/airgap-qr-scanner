@@ -182,15 +182,22 @@ class AirGapSenderGUI:
         # Chunk Size Slider
         chunk_box = tk.Frame(settings_frame, bg="#151c2c")
         chunk_box.pack(fill=tk.X, pady=4)
-        self.lbl_chunk_size = tk.Label(chunk_box, text="Kích thước mảnh: 450 bytes", fg="#f0f4fc", bg="#151c2c", font=("Segoe UI", 9))
+        self.lbl_chunk_size = tk.Label(chunk_box, text="Kích thước mảnh: 1000 bytes", fg="#f0f4fc", bg="#151c2c", font=("Segoe UI", 9))
         self.lbl_chunk_size.pack(side=tk.LEFT)
         self.slider_chunk = tk.Scale(
-            settings_frame, from_=200, to=850, resolution=50, orient=tk.HORIZONTAL,
+            settings_frame, from_=300, to=2000, resolution=50, orient=tk.HORIZONTAL,
             bg="#151c2c", fg="white", highlightthickness=0,
             command=self._on_chunk_change
         )
-        self.slider_chunk.set(450)
-        self.slider_chunk.pack(fill=tk.X, pady=(0, 8))
+        self.slider_chunk.set(1000)
+        self.slider_chunk.pack(fill=tk.X, pady=(0, 4))
+
+        btn_auto_chunk = tk.Button(
+            settings_frame, text="⚡ Tự động tối ưu số mảnh (Auto)", font=("Segoe UI", 8, "bold"),
+            bg="#232f48", fg="#ffb800", relief="flat", cursor="hand2",
+            command=self._on_auto_optimize_chunks
+        )
+        btn_auto_chunk.pack(fill=tk.X, pady=(0, 8))
 
         # Grid Mode Option (1x1 vs 2x2)
         grid_box = tk.Frame(settings_frame, bg="#151c2c")
@@ -353,6 +360,17 @@ class AirGapSenderGUI:
         self.lbl_chunk_size.config(text=f"Kích thước mảnh: {int(val)} bytes")
         if self.current_file_path:
             self._process_and_prepare_file()
+
+    def _on_auto_optimize_chunks(self):
+        """Automatically calculates the sweet-spot chunk size (30-40 frames)."""
+        if not self.file_info:
+            return
+        comp_size = self.file_info["compressed_size"]
+        target_chunks = 35
+        optimal = max(400, min(1800, int(comp_size / target_chunks)))
+        optimal = (optimal // 50) * 50
+        self.slider_chunk.set(optimal)
+        self._process_and_prepare_file()
 
     def _on_mode_change(self, event=None):
         selected = self.mode_var.get()
