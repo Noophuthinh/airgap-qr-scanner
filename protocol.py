@@ -25,8 +25,9 @@ class PacketProtocol:
             raw_data = f.read()
 
         orig_size = len(raw_data)
+        orig_md5 = hashlib.md5(raw_data).hexdigest()
         orig_sha256 = hashlib.sha256(raw_data).hexdigest()
-        file_id = orig_sha256[:8]  # Short 8-char hex identifier
+        file_id = orig_md5[:8]  # Short 8-char hex identifier
 
         # Compress data using zlib maximum compression
         compressed_data = zlib.compress(raw_data, level=9)
@@ -48,14 +49,15 @@ class PacketProtocol:
         formatted_packets = []
         for idx, chunk in enumerate(chunks_raw):
             payload_b64 = base64.b64encode(chunk).decode("ascii")
-            # Format: QRF1|<file_id>|<total_chunks>|<chunk_idx>|<orig_size>|<sha256>|<file_name_b64>|<payload_b64>
-            packet_str = f"{MAGIC_PREFIX}|{file_id}|{total_chunks}|{idx}|{orig_size}|{orig_sha256}|{file_name_b64}|{payload_b64}"
+            # Format: QRF1|<file_id>|<total_chunks>|<chunk_idx>|<orig_size>|<md5>|<file_name_b64>|<payload_b64>
+            packet_str = f"{MAGIC_PREFIX}|{file_id}|{total_chunks}|{idx}|{orig_size}|{orig_md5}|{file_name_b64}|{payload_b64}"
             formatted_packets.append(packet_str)
 
         return {
             "file_name": file_name,
             "orig_size": orig_size,
             "compressed_size": compressed_size,
+            "orig_md5": orig_md5,
             "orig_sha256": orig_sha256,
             "file_id": file_id,
             "total_chunks": total_chunks,
@@ -78,7 +80,7 @@ class PacketProtocol:
                 "total_chunks": int(parts[2]),
                 "chunk_idx": int(parts[3]),
                 "orig_size": int(parts[4]),
-                "sha256": parts[5],
+                "md5": parts[5],
                 "file_name": base64.b64decode(parts[6].encode("ascii")).decode("utf-8"),
                 "payload_bytes": base64.b64decode(parts[7].encode("ascii")),
             }

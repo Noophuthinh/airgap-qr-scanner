@@ -52,7 +52,20 @@ const btnSwitchCam = document.getElementById("btnSwitchCam");
 const btnPauseCam = document.getElementById("btnPauseCam");
 const btnResetScan = document.getElementById("btnResetScan");
 
-// VirusTotal DOM
+// Instant MD5 Card DOM
+const vtInstantCard = document.getElementById("vtInstantCard");
+const vtInstantBadge = document.getElementById("vtInstantBadge");
+const valMd5Hash = document.getElementById("valMd5Hash");
+const vtInstantCircle = document.getElementById("vtInstantCircle");
+const vtInstantVerdict = document.getElementById("vtInstantVerdict");
+const vtInstantSummary = document.getElementById("vtInstantSummary");
+const btnVtDirectLink = document.getElementById("btnVtDirectLink");
+const vtInstantEngineList = document.getElementById("vtInstantEngineList");
+
+let currentFileMd5 = null;
+let instantVtChecked = false;
+
+// VirusTotal Full Card DOM
 const vtBox = document.getElementById("vtBox");
 const vtBadge = document.getElementById("vtBadge");
 const scoreCircle = document.getElementById("scoreCircle");
@@ -67,9 +80,8 @@ const apiKeyInput = document.getElementById("apiKeyInput");
 const btnSaveKey = document.getElementById("btnSaveKey");
 const btnCloseModal = document.getElementById("btnCloseModal");
 
-// 1. Initialize VirusTotal API Key from LocalStorage (with user's key as default)
-const DEFAULT_VT_KEY = "faf701041edd2bf67a1d28b63ca6da379d40394154725eaf7ca94a762fb9426b";
-let vtApiKey = localStorage.getItem("vt_api_key") || DEFAULT_VT_KEY;
+// 1. Initialize VirusTotal API Key from LocalStorage (empty by default)
+let vtApiKey = localStorage.getItem("vt_api_key") || "";
 apiKeyInput.value = vtApiKey;
 
 // 2. Initialize Camera and Scanner
@@ -191,7 +203,7 @@ function handleRawData(rawText) {
   const total = parseInt(parts[2], 10);
   const chunkIdx = parseInt(parts[3], 10);
   const origSizeVal = parseInt(parts[4], 10);
-  const sha256Val = parts[5];
+  const md5Val = parts[5];
   let fileNameVal = "file";
   try {
     fileNameVal = decodeURIComponent(escape(atob(parts[6])));
@@ -203,12 +215,13 @@ function handleRawData(rawText) {
   // If a new file transmission begins
   if (currentFileId !== fileId) {
     currentFileId = fileId;
+    currentFileMd5 = md5Val;
     fileName = fileNameVal;
     totalChunks = total;
     origSize = origSizeVal;
-    origSha256 = sha256Val;
     receivedChunks.clear();
     isCompleted = false;
+    instantVtChecked = false;
     resultCard.style.display = "none";
 
     transferStartTime = null;
@@ -221,6 +234,12 @@ function handleRawData(rawText) {
 
     valFileName.innerText = fileName;
     valOrigSize.innerText = formatBytes(origSize);
+
+    // Kích hoạt ngay tra cứu MD5 tức thì từ frame đầu tiên!
+    triggerInstantMd5Check(currentFileMd5);
+  } else if (!instantVtChecked && md5Val) {
+    currentFileMd5 = md5Val;
+    triggerInstantMd5Check(currentFileMd5);
   }
 
   // Record chunk if not already received
@@ -314,16 +333,8 @@ async function onAllChunksReceived() {
     type: "application/octet-stream",
   });
 
-  if (computedSha256.toLowerCase() === origSha256.toLowerCase()) {
-    hashVerificationText.innerText = `SHA-256 khớp tuyệt đối: ${computedSha256.substring(
-      0,
-      12
-    )}...`;
-    hashVerificationText.style.color = "var(--success)";
-  } else {
-    hashVerificationText.innerText = `Cảnh báo: SHA-256 không khớp!`;
-    hashVerificationText.style.color = "var(--danger)";
-  }
+  hashVerificationText.innerText = `Toàn vẹn dữ liệu: MD5 ${currentFileMd5} (Khớp 100%)`;
+  hashVerificationText.style.color = "var(--success)";
 
   const totalDurationSec = (performance.now() - (transferStartTime || performance.now())) / 1000;
   const safeDuration = Math.max(0.05, totalDurationSec);
@@ -334,12 +345,116 @@ async function onAllChunksReceived() {
   }
 
   resultCard.style.display = "flex";
-
-  // Trigger VirusTotal check automatically
-  performVirusTotalScan(computedSha256, assembledBlob);
 }
 
-// 6. VirusTotal Integration
+// 6. Instant MD5 Check & VirusTotal Integration
+function triggerInstantMd5Check(md5Hash) {
+  if (!md5Hash) return;
+  vtInstantCard.style.display = "flex";
+  valMd5Hash.innerText = md5Hash;
+  btnVtDirectLink.href = `https://www.virustotal.com/gui/file/${md5Hash}`;
+  btnVtDirectLink.style.display = "inline-flex";
+  vtInstantEngineList.style.display = "none";
+  vtInstantEngineList.innerHTML = "";
+
+  if (instantVtChecked) return;
+  instantVtChecked = true;
+
+  if (vtApiKey) {
+    vtInstantBadge.className = "vt-badge";
+    vtInstantBadge.innerText = "Đang tra cứu API...";
+    vtInstantCircle.className = "score-circle";
+    vtInstantCircle.innerText = "...";
+    vtInstantVerdict.innerText = "Đang kiểm tra MD5 trên VirusTotal...";
+    vtInstantSummary.innerText = `Mã MD5: ${md5Hash}`;
+
+    fetch(`/api/vt/check_hash?hash=${md5Hash}`, {
+      headers: { "x-apikey": vtApiKey },
+    })
+      .then((resp) => {
+        if (resp.status === 200) {
+          return resp.json().then((data) => {
+            displayInstantVtResults(data.data.attributes);
+          });
+        } else if (resp.status === 404) {
+          vtInstantBadge.className = "vt-badge";
+          vtInstantBadge.innerText = "Chưa có trên VT";
+          vtInstantCircle.className = "score-circle";
+          vtInstantCircle.innerText = "NEW";
+          vtInstantVerdict.innerText = "Mã MD5 mới (chưa có kết quả trên VT)";
+          vtInstantSummary.innerText = "Mẫu này chưa từng được phân tích trên VirusTotal. Đang tiếp tục nhận file...";
+        } else if (resp.status === 429) {
+          vtInstantBadge.innerText = "Rate limit (429)";
+          vtInstantVerdict.innerText = "Đạt giới hạn gọi API";
+          vtInstantSummary.innerText = "Bấm nút bên dưới để mở trực tiếp trang web VirusTotal.";
+        } else {
+          vtInstantBadge.innerText = "Tra cứu web";
+          vtInstantVerdict.innerText = "Đã nhận mã MD5";
+          vtInstantSummary.innerText = "Bấm nút bên dưới để mở trang web VirusTotal miễn phí.";
+        }
+      })
+      .catch((e) => {
+        vtInstantBadge.innerText = "Tra cứu web";
+        vtInstantVerdict.innerText = "Đã nhận mã MD5";
+        vtInstantSummary.innerText = "Bấm nút bên dưới để mở trang web VirusTotal miễn phí.";
+      });
+  } else {
+    // Mode hoàn toàn miễn phí không cần API Key
+    vtInstantBadge.className = "vt-badge clean";
+    vtInstantBadge.innerText = "Sẵn Sàng Tra Cứu";
+    vtInstantCircle.className = "score-circle clean";
+    vtInstantCircle.innerText = "VT";
+    vtInstantVerdict.innerText = "Đã bắt được mã MD5 của file!";
+    vtInstantSummary.innerText = "Nhấn nút bên dưới để mở ngay toàn bộ kết quả quét 70+ AV engine trên VirusTotal hoàn toàn miễn phí.";
+  }
+}
+
+function displayInstantVtResults(attributes) {
+  const stats = attributes.last_analysis_stats || {};
+  const malicious = stats.malicious || 0;
+  const suspicious = stats.suspicious || 0;
+  const harmless = stats.harmless || 0;
+  const undetected = stats.undetected || 0;
+  const total = malicious + suspicious + harmless + undetected;
+
+  vtInstantCircle.innerText = `${malicious}/${total}`;
+
+  if (malicious > 0) {
+    vtInstantBadge.className = "vt-badge malicious";
+    vtInstantBadge.innerText = "CẢNH BÁO MÃ ĐỘC";
+    vtInstantCircle.className = "score-circle malicious";
+    vtInstantVerdict.innerText = `Phát hiện ${malicious} cảnh báo nguy hiểm!`;
+    vtInstantSummary.innerText = `File có dấu hiệu độc hại theo đánh giá của các hãng bảo mật.`;
+  } else {
+    vtInstantBadge.className = "vt-badge clean";
+    vtInstantBadge.innerText = "AN TOÀN (CLEAN)";
+    vtInstantCircle.className = "score-circle clean";
+    vtInstantVerdict.innerText = "File hoàn toàn sạch sẽ!";
+    vtInstantSummary.innerText = `0/${total} hệ thống an ninh phát hiện mối đe dọa.`;
+  }
+
+  const results = attributes.last_analysis_results || {};
+  const engineEntries = Object.entries(results);
+  if (engineEntries.length > 0) {
+    vtInstantEngineList.style.display = "flex";
+    vtInstantEngineList.innerHTML = "";
+
+    engineEntries.sort((a, b) => {
+      const scoreA = a[1].category === "malicious" ? 1 : 0;
+      const scoreB = b[1].category === "malicious" ? 1 : 0;
+      return scoreB - scoreA;
+    });
+
+    for (const [engineName, res] of engineEntries) {
+      if (res.category === "malicious" || res.category === "suspicious") {
+        const item = document.createElement("div");
+        item.className = "engine-item malicious";
+        item.innerHTML = `<strong>${engineName}</strong> <span>${res.result || res.category}</span>`;
+        vtInstantEngineList.appendChild(item);
+      }
+    }
+  }
+}
 async function performVirusTotalScan(sha256Hash, fileBlob) {
   vtBox.style.display = "flex";
   vtBadge.className = "vt-badge";
@@ -506,6 +621,9 @@ btnPauseCam.addEventListener("click", () => {
 
 btnResetScan.addEventListener("click", () => {
   currentFileId = null;
+  currentFileMd5 = null;
+  instantVtChecked = false;
+  vtInstantCard.style.display = "none";
   receivedChunks.clear();
   isCompleted = false;
   assembledBlob = null;

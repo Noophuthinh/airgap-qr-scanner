@@ -76,6 +76,31 @@
       </div>
     </section>
 
+    <!-- Instant MD5 VirusTotal Card (Frame đầu tiên) -->
+    <section class="vt-instant-card" id="vtInstantCard" style="display: none;">
+      <div class="vt-header">
+        <span class="vt-logo">⚡ VirusTotal MD5 Quick Scan</span>
+        <span class="vt-badge" id="vtInstantBadge">Đã nhận MD5</span>
+      </div>
+      <div class="md5-display-row">
+        <span class="md5-label">MD5:</span>
+        <code id="valMd5Hash">--------------------------------</code>
+      </div>
+      <div class="vt-score-display" id="vtInstantScoreDisplay">
+        <div class="score-circle" id="vtInstantCircle">--</div>
+        <div class="score-details">
+          <h4 id="vtInstantVerdict">Đã nhận diện mã MD5</h4>
+          <p id="vtInstantSummary">Đang kiểm tra cơ sở dữ liệu VirusTotal...</p>
+        </div>
+      </div>
+      <div class="vt-instant-actions">
+        <a id="btnVtDirectLink" href="#" target="_blank" class="btn primary-btn" style="text-decoration: none; text-align: center; width: 100%;">
+          🛡️ Xem Báo Cáo VirusTotal Miễn Phí (Không Cần API)
+        </a>
+      </div>
+      <div class="vt-engine-list" id="vtInstantEngineList" style="display: none;"></div>
+    </section>
+
     <!-- Completion & VirusTotal Panel -->
     <section class="result-card" id="resultCard" style="display: none;">
       <div class="success-header">

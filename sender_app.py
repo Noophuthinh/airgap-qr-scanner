@@ -153,6 +153,12 @@ class AirGapSenderGUI:
         )
         self.lbl_chunks_count.pack(fill=tk.X, pady=2)
 
+        self.lbl_md5 = tk.Label(
+            self.info_frame, text="MD5: -", font=("Segoe UI", 8),
+            fg="#00f0ff", bg="#151c2c", anchor="w", wraplength=280
+        )
+        self.lbl_md5.pack(fill=tk.X, pady=2)
+
         # Transmission Settings
         settings_frame = tk.LabelFrame(
             self.left_panel, text="Cài Đặt Truyền Quang Học", font=("Segoe UI", 10, "bold"),
@@ -379,6 +385,7 @@ class AirGapSenderGUI:
             text=f"Sau khi nén: {self._format_bytes(self.file_info['compressed_size'])} (-{ratio:.1f}%)"
         )
         self.lbl_chunks_count.config(text=f"Số mảnh QR: {self.file_info['total_chunks']}")
+        self.lbl_md5.config(text=f"MD5: {self.file_info['orig_md5']}")
 
         # Pre-render QR images
         self.qr_cache.clear()

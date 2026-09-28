@@ -356,6 +356,41 @@ body {
   background: #2d3d5e;
 }
 
+/* Instant VirusTotal Card (Frame 0 MD5) */
+.vt-instant-card {
+  background: var(--card-bg);
+  border-radius: 14px;
+  border: 1px solid var(--accent);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 0 15px rgba(0, 240, 255, 0.15);
+  animation: fadeIn 0.3s ease;
+}
+
+.md5-display-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.4);
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-family: monospace;
+  font-size: 13px;
+  overflow-x: auto;
+}
+
+.md5-label {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.vt-instant-actions {
+  display: flex;
+  margin-top: 4px;
+}
+
 /* VirusTotal Panel */
 .vt-box {
   background: rgba(0, 0, 0, 0.3);
