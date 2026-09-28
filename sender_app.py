@@ -55,7 +55,7 @@ class AirGapSenderGUI:
         self.current_frame_idx = 0
         self.loop_count = 1
         self.fps = 10
-        self.grid_mode = "1x1"  # "1x1" or "2x2"
+        self.grid_mode = "1x2"  # "1x1", "1x2", or "2x2"
         self.showing_connect_qr = False
         self.config = load_config()
         self.public_scanner_url = self.config.get("public_scanner_url", "")
@@ -190,10 +190,14 @@ class AirGapSenderGUI:
         grid_box = tk.Frame(settings_frame, bg="#151c2c")
         grid_box.pack(fill=tk.X, pady=4)
         tk.Label(grid_box, text="Chế độ quét:", fg="#f0f4fc", bg="#151c2c", font=("Segoe UI", 9)).pack(side=tk.LEFT)
-        self.mode_var = tk.StringVar(value="1x1")
+        self.mode_var = tk.StringVar(value="1x2 (2 mã song song - Cực nhanh & dễ đọc)")
         self.combo_mode = ttk.Combobox(
-            grid_box, textvariable=self.mode_var, values=["1x1 (Mã đơn tiêu chuẩn)", "2x2 (Lưới Multi-QR - 4x tốc độ)"],
-            state="readonly", width=22
+            grid_box, textvariable=self.mode_var, values=[
+                "1x1 (1 mã - Rõ nét nhất)",
+                "1x2 (2 mã song song - Cực nhanh & dễ đọc)",
+                "2x2 (4 mã lưới - 4x tốc độ)"
+            ],
+            state="readonly", width=24
         )
         self.combo_mode.pack(side=tk.RIGHT)
         self.combo_mode.bind("<<ComboboxSelected>>", self._on_mode_change)
@@ -346,10 +350,14 @@ class AirGapSenderGUI:
 
     def _on_mode_change(self, event=None):
         selected = self.mode_var.get()
-        if "2x2" in selected:
+        if "2x2" in selected or "4 mã" in selected:
             self.grid_mode = "2x2"
+        elif "1x2" in selected or "2 mã" in selected:
+            self.grid_mode = "1x2"
         else:
             self.grid_mode = "1x1"
+        if not self.is_transmitting and self.qr_cache:
+            self._display_current_frame()
 
     def _process_and_prepare_file(self):
         """Compresses file and renders all QR frames into memory cache."""
@@ -408,7 +416,13 @@ class AirGapSenderGUI:
         self._display_current_frame()
 
         # Step index
-        step = 4 if self.grid_mode == "2x2" else 1
+        if self.grid_mode == "2x2":
+            step = 4
+        elif self.grid_mode == "1x2":
+            step = 2
+        else:
+            step = 1
+
         self.current_frame_idx += step
         if self.current_frame_idx >= len(self.qr_cache):
             self.current_frame_idx = 0
@@ -431,6 +445,22 @@ class AirGapSenderGUI:
             self._render_image_on_canvas(img)
             self.progress_var.set(((idx + 1) / total) * 100)
             self.lbl_progress_text.config(text=f"Mảnh: {idx + 1}/{total} ({int(((idx + 1)/total)*100)}%)")
+        elif self.grid_mode == "1x2":
+            # 1x2 Dual Mode: 2 large QR codes side by side
+            w, h = 320, 320
+            dual_img = Image.new("RGB", (w * 2 + 30, h), "white")
+            for sub_i in range(2):
+                curr_idx = (idx + sub_i) % total
+                sub_qr = self.qr_cache[curr_idx].resize((w, h), Image.Resampling.NEAREST)
+                pos_x = sub_i * (w + 30)
+                dual_img.paste(sub_qr, (pos_x, 0))
+
+            self._render_image_on_canvas(dual_img)
+            active_chunk = min(total, idx + 2)
+            self.progress_var.set((active_chunk / total) * 100)
+            self.lbl_progress_text.config(
+                text=f"Song song 2 mã: Mảnh {idx + 1}-{active_chunk}/{total} ({int((active_chunk/total)*100)}%)"
+            )
         else:
             # 2x2 Grid Mode: Combine 4 QR codes into 1 image
             w, h = 260, 260
