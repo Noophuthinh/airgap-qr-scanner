@@ -30,12 +30,22 @@ const valFileName = document.getElementById("valFileName");
 const valProgress = document.getElementById("valProgress");
 const valOrigSize = document.getElementById("valOrigSize");
 const valFps = document.getElementById("valFps");
+const valSpeed = document.getElementById("valSpeed");
+const valReceivedBytes = document.getElementById("valReceivedBytes");
 const progressBar = document.getElementById("progressBar");
 const missingChunksBox = document.getElementById("missingChunksBox");
 const missingChunksList = document.getElementById("missingChunksList");
 
+// Speed & Metrics calculation state
+let transferStartTime = null;
+let lastSpeedCalcTime = performance.now();
+let bytesSinceLastCalc = 0;
+let totalReceivedBytes = 0;
+let currentSpeedKBps = 0;
+
 const resultCard = document.getElementById("resultCard");
 const hashVerificationText = document.getElementById("hashVerificationText");
+const valTransferSummary = document.getElementById("valTransferSummary");
 const btnDownload = document.getElementById("btnDownload");
 const btnManualVT = document.getElementById("btnManualVT");
 const btnSwitchCam = document.getElementById("btnSwitchCam");
@@ -124,6 +134,17 @@ async function scanLoop() {
       lastFpsTime = now;
     }
 
+    // Live speed calculation every 400ms
+    const timeDiff = (now - lastSpeedCalcTime) / 1000;
+    if (timeDiff >= 0.4) {
+      if (transferStartTime && !isCompleted && totalReceivedBytes > 0) {
+        currentSpeedKBps = (bytesSinceLastCalc / 1024) / timeDiff;
+        valSpeed.innerText = `${currentSpeedKBps.toFixed(1)} KB/s`;
+      }
+      bytesSinceLastCalc = 0;
+      lastSpeedCalcTime = now;
+    }
+
     if (barcodeDetector) {
       try {
         const barcodes = await barcodeDetector.detect(video);
@@ -190,6 +211,14 @@ function handleRawData(rawText) {
     isCompleted = false;
     resultCard.style.display = "none";
 
+    transferStartTime = null;
+    bytesSinceLastCalc = 0;
+    totalReceivedBytes = 0;
+    currentSpeedKBps = 0;
+    valSpeed.innerText = "0.0 KB/s";
+    valReceivedBytes.innerText = "0 KB";
+    if (valTransferSummary) valTransferSummary.innerText = "";
+
     valFileName.innerText = fileName;
     valOrigSize.innerText = formatBytes(origSize);
   }
@@ -200,6 +229,14 @@ function handleRawData(rawText) {
       c.charCodeAt(0)
     );
     receivedChunks.set(chunkIdx, rawChunkBytes);
+
+    if (!transferStartTime) {
+      transferStartTime = performance.now();
+      lastSpeedCalcTime = performance.now();
+    }
+    bytesSinceLastCalc += rawChunkBytes.length;
+    totalReceivedBytes += rawChunkBytes.length;
+
     updateProgressUI();
 
     // Check if 100% received
@@ -214,6 +251,7 @@ function updateProgressUI() {
   const pct = Math.floor((count / totalChunks) * 100);
   valProgress.innerText = `${pct}% (${count}/${totalChunks})`;
   progressBar.style.width = `${pct}%`;
+  valReceivedBytes.innerText = formatBytes(totalReceivedBytes);
 
   // Missing chunks calculation
   const missing = [];
@@ -285,6 +323,14 @@ async function onAllChunksReceived() {
   } else {
     hashVerificationText.innerText = `Cảnh báo: SHA-256 không khớp!`;
     hashVerificationText.style.color = "var(--danger)";
+  }
+
+  const totalDurationSec = (performance.now() - (transferStartTime || performance.now())) / 1000;
+  const safeDuration = Math.max(0.05, totalDurationSec);
+  const avgSpeedKBps = (totalReceivedBytes / 1024) / safeDuration;
+  valSpeed.innerText = `${avgSpeedKBps.toFixed(1)} KB/s (Hoàn tất)`;
+  if (valTransferSummary) {
+    valTransferSummary.innerText = `⏱️ Thời gian: ${totalDurationSec.toFixed(1)}s | Tốc độ TB: ${avgSpeedKBps.toFixed(1)} KB/s (${(avgSpeedKBps * 8).toFixed(0)} Kbps)`;
   }
 
   resultCard.style.display = "flex";
@@ -468,6 +514,13 @@ btnResetScan.addEventListener("click", () => {
   valProgress.innerText = "0% (0/0)";
   progressBar.style.width = "0%";
   missingChunksBox.style.display = "none";
+  transferStartTime = null;
+  bytesSinceLastCalc = 0;
+  totalReceivedBytes = 0;
+  currentSpeedKBps = 0;
+  valSpeed.innerText = "0.0 KB/s";
+  valReceivedBytes.innerText = "0 KB";
+  if (valTransferSummary) valTransferSummary.innerText = "";
 });
 
 // Settings Modal Events
