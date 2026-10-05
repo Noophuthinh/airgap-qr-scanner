@@ -13,7 +13,20 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import qrcode
+import qrcode.base
 from PIL import Image, ImageTk
+
+# Defensive patch for qrcode bug where all-zero data blocks raise ValueError: glog(0)
+_orig_poly_mod = qrcode.base.Polynomial.__mod__
+def _safe_poly_mod(self, other):
+    if not any(self.num):
+        return qrcode.base.Polynomial([0] * (len(other) - 1), 0)
+    while self.num and self.num[0] == 0:
+        self.num.pop(0)
+    if not self.num or len(self) < len(other):
+        return self
+    return _orig_poly_mod(self, other)
+qrcode.base.Polynomial.__mod__ = _safe_poly_mod
 
 from protocol import PacketProtocol
 from server import ScannerWebServer, get_local_ip
@@ -400,8 +413,6 @@ class AirGapSenderGUI:
     def _apply_preset(self, chunk_size: int, fps: int):
         self.slider_fps.set(fps)
         self.slider_chunk.set(chunk_size)
-        self._on_fps_change(fps)
-        self._on_chunk_change(chunk_size)
 
     def _on_auto_optimize_chunks(self):
         """Pick a chunk size giving roughly 25-30 data frames (sweet spot for high-speed phone scanning)."""

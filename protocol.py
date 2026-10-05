@@ -109,7 +109,9 @@ class PacketProtocol:
 
         size = max(64, int(chunk_size))
         k = max(1, (payload_len + size - 1) // size)
-        padded = payload + b"\x00" * (k * size - payload_len)
+        pad_len = k * size - payload_len
+        pad_bytes = bytes((i * 37 + 13) % 255 + 1 for i in range(pad_len))
+        padded = payload + pad_bytes
         blocks = [padded[i * size:(i + 1) * size] for i in range(k)]
 
         repair = max(6, k // 3)
