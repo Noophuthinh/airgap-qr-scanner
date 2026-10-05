@@ -55,7 +55,10 @@ class AirGapSenderGUI:
         self.current_frame_idx = 0
         self.loop_count = 1
         self.fps = 10
-        self.grid_mode = "1x2"  # "1x1", "1x2", or "2x2"
+        self.grid_mode = "1x1"  # "1x1", "1x2", or "2x2"
+        self._chunk_after = None
+        self._prep_token = 0
+        self._prep_state = None
         self.showing_connect_qr = False
         self.config = load_config()
         self.public_scanner_url = self.config.get("public_scanner_url", "")
@@ -182,14 +185,14 @@ class AirGapSenderGUI:
         # Chunk Size Slider
         chunk_box = tk.Frame(settings_frame, bg="#151c2c")
         chunk_box.pack(fill=tk.X, pady=4)
-        self.lbl_chunk_size = tk.Label(chunk_box, text="Kích thước mảnh: 1000 bytes", fg="#f0f4fc", bg="#151c2c", font=("Segoe UI", 9))
+        self.lbl_chunk_size = tk.Label(chunk_box, text="Kích thước mảnh: 800 bytes", fg="#f0f4fc", bg="#151c2c", font=("Segoe UI", 9))
         self.lbl_chunk_size.pack(side=tk.LEFT)
         self.slider_chunk = tk.Scale(
             settings_frame, from_=300, to=2000, resolution=50, orient=tk.HORIZONTAL,
             bg="#151c2c", fg="white", highlightthickness=0,
             command=self._on_chunk_change
         )
-        self.slider_chunk.set(1000)
+        self.slider_chunk.set(800)
         self.slider_chunk.pack(fill=tk.X, pady=(0, 4))
 
         btn_auto_chunk = tk.Button(
@@ -203,7 +206,7 @@ class AirGapSenderGUI:
         grid_box = tk.Frame(settings_frame, bg="#151c2c")
         grid_box.pack(fill=tk.X, pady=4)
         tk.Label(grid_box, text="Chế độ quét:", fg="#f0f4fc", bg="#151c2c", font=("Segoe UI", 9)).pack(side=tk.LEFT)
-        self.mode_var = tk.StringVar(value="1x2 (2 mã song song - Cực nhanh & dễ đọc)")
+        self.mode_var = tk.StringVar(value="1x1 (1 mã - Rõ nét nhất)")
         self.combo_mode = ttk.Combobox(
             grid_box, textvariable=self.mode_var, values=[
                 "1x1 (1 mã - Rõ nét nhất)",
@@ -359,18 +362,18 @@ class AirGapSenderGUI:
     def _on_chunk_change(self, val):
         self.lbl_chunk_size.config(text=f"Kích thước mảnh: {int(val)} bytes")
         if self.current_file_path:
-            self._process_and_prepare_file()
+            # Debounce: only rebuild once the slider stops moving (prevents UI freezes)
+            if self._chunk_after:
+                self.root.after_cancel(self._chunk_after)
+            self._chunk_after = self.root.after(500, self._process_and_prepare_file)
 
     def _on_auto_optimize_chunks(self):
-        """Automatically calculates the sweet-spot chunk size (30-40 frames)."""
+        """Pick a chunk size giving roughly 35 data frames (sweet spot for phone cameras)."""
         if not self.file_info:
             return
-        comp_size = self.file_info["compressed_size"]
-        target_chunks = 35
-        optimal = max(400, min(1800, int(comp_size / target_chunks)))
+        optimal = max(400, min(1400, int(self.file_info["compressed_size"] / 35)))
         optimal = (optimal // 50) * 50
-        self.slider_chunk.set(optimal)
-        self._process_and_prepare_file()
+        self.slider_chunk.set(optimal)  # triggers the debounced rebuild
 
     def _on_mode_change(self, event=None):
         selected = self.mode_var.get()
@@ -383,43 +386,98 @@ class AirGapSenderGUI:
         if not self.is_transmitting and self.qr_cache:
             self._display_current_frame()
 
-    def _process_and_prepare_file(self):
-        """Compresses file and renders all QR frames into memory cache."""
-        chunk_size = int(self.slider_chunk.get())
-        self.lbl_status.config(text="Đang nén dữ liệu & tạo mã QR...", fg="#ffb800")
-        self.root.update_idletasks()
+    @staticmethod
+    def _make_qr_image(text: str) -> Image.Image:
+        """Fast QR -> 8-bit image (1 pixel per module, 4-module quiet zone)."""
+        qr = qrcode.QRCode(
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            border=0,
+            box_size=1,
+            mask_pattern=2,
+        )
+        qr.add_data(text)
+        qr.make(fit=True)
+        matrix = qr.get_matrix()
+        quiet = 4
+        n = len(matrix) + 2 * quiet
+        white = b"\xff" * n
+        rows = [white] * quiet
+        for r in matrix:
+            rows.append(b"\xff" * quiet + bytes(0 if c else 255 for c in r) + b"\xff" * quiet)
+        rows += [white] * quiet
+        return Image.frombytes("L", (n, n), b"".join(rows))
 
-        try:
-            self.file_info = PacketProtocol.prepare_file(self.current_file_path, chunk_size=chunk_size)
-        except Exception as e:
-            messagebox.showerror("Lỗi", f"Không thể xử lý file: {e}")
+    def _process_and_prepare_file(self):
+        """Compress + encode + render QR frames in a background thread (UI stays responsive)."""
+        self._chunk_after = None
+        if not self.current_file_path:
+            return
+        self._prep_token += 1
+        token = self._prep_token
+        self.is_transmitting = False
+        self.qr_cache = []
+        self.btn_start.config(text="▶️ BẮT ĐẦU PHÁT QR", bg="#00e676", state=tk.DISABLED)
+        self.lbl_status.config(text="Đang xử lý file...", fg="#ffb800")
+
+        state = {"info": None, "images": [], "error": None, "done": False, "shown": False}
+        self._prep_state = state
+        chunk_size = int(self.slider_chunk.get())
+        path = self.current_file_path
+
+        def worker():
+            try:
+                info = PacketProtocol.prepare_file(path, chunk_size=chunk_size)
+                state["info"] = info
+                for pkt in info["packets"]:
+                    if token != self._prep_token:
+                        return
+                    state["images"].append(self._make_qr_image(pkt))
+                    time.sleep(0.001)  # yield the GIL so Tk stays smooth
+            except Exception as e:  # noqa: BLE001
+                state["error"] = str(e)
+            state["done"] = True
+
+        threading.Thread(target=worker, daemon=True).start()
+        self._poll_prepare(token)
+
+    def _poll_prepare(self, token):
+        if token != self._prep_token:
+            return
+        state = self._prep_state
+        if state["error"]:
+            messagebox.showerror("Lỗi", f"Không thể xử lý file: {state['error']}")
+            self.lbl_status.config(text="Lỗi xử lý file", fg="#ff3860")
             return
 
-        # Update Info Card
-        self.lbl_file_name.config(text=f"Tệp: {self.file_info['file_name']}")
-        self.lbl_orig_size.config(text=f"Kích thước gốc: {self._format_bytes(self.file_info['orig_size'])}")
-        ratio = (1 - (self.file_info['compressed_size'] / max(1, self.file_info['orig_size']))) * 100
-        self.lbl_comp_size.config(
-            text=f"Sau khi nén: {self._format_bytes(self.file_info['compressed_size'])} (-{ratio:.1f}%)"
-        )
-        self.lbl_chunks_count.config(text=f"Số mảnh QR: {self.file_info['total_chunks']}")
-        self.lbl_md5.config(text=f"MD5: {self.file_info['orig_md5']}")
+        info = state["info"]
+        if info and not state["shown"]:
+            state["shown"] = True
+            self.file_info = info
+            self.lbl_file_name.config(text=f"Tệp: {info['file_name']}")
+            self.lbl_orig_size.config(text=f"Kích thước gốc: {self._format_bytes(info['orig_size'])}")
+            ratio = (1 - info["compressed_size"] / max(1, info["orig_size"])) * 100
+            note = "nén zlib" if info["compressed"] else "không nén (dữ liệu đã nén sẵn)"
+            self.lbl_comp_size.config(
+                text=f"Dữ liệu gửi: {self._format_bytes(info['compressed_size'])} ({note}, {ratio:+.1f}%)"
+            )
+            self.lbl_chunks_count.config(
+                text=f"Mảnh gốc: {info['total_chunks']} | Tổng khung: {len(info['packets'])}"
+            )
+            self.lbl_md5.config(text=f"MD5: {info['orig_md5']}")
 
-        # Pre-render QR images
-        self.qr_cache.clear()
-        packets = self.file_info["packets"]
-
-        for packet_str in packets:
-            qr = qrcode.QRCode(box_size=8, border=2, error_correction=qrcode.constants.ERROR_CORRECT_L)
-            qr.add_data(packet_str)
-            qr.make(fit=True)
-            img = qr.make_image(fill_color="black", back_color="white")
-            self.qr_cache.append(img)
-
-        self.btn_start.config(state=tk.NORMAL)
-        self.lbl_status.config(text="Đã chuẩn bị xong. Nhấn Bắt Đầu để truyền!", fg="#00e676")
-        self.current_frame_idx = 0
-        self._display_current_frame()
+        if info:
+            done = len(state["images"])
+            total = len(info["packets"])
+            if state["done"]:
+                self.qr_cache = state["images"]
+                self.btn_start.config(state=tk.NORMAL)
+                self.lbl_status.config(text="Đã sẵn sàng. Nhấn Bắt Đầu để truyền!", fg="#00e676")
+                self.current_frame_idx = 0
+                self.loop_count = 1
+                self._display_current_frame()
+                return
+            self.lbl_status.config(text=f"Đang tạo mã QR {done}/{total}...", fg="#ffb800")
+        self.root.after(100, self._poll_prepare, token)
 
     def _toggle_transmission(self):
         if not self.is_transmitting:
@@ -434,75 +492,54 @@ class AirGapSenderGUI:
             self.btn_start.config(text="▶️ TIẾP TỤC PHÁT", bg="#00e676")
             self.lbl_status.config(text="Đã tạm dừng", fg="#ffb800")
 
+    def _frames_per_view(self):
+        return {"1x1": 1, "1x2": 2, "2x2": 4}[self.grid_mode]
+
     def _transmission_tick(self):
         if not self.is_transmitting:
             return
-
         self._display_current_frame()
-
-        # Step index
-        if self.grid_mode == "2x2":
-            step = 4
-        elif self.grid_mode == "1x2":
-            step = 2
-        else:
-            step = 1
-
-        self.current_frame_idx += step
+        self.current_frame_idx += self._frames_per_view()
         if self.current_frame_idx >= len(self.qr_cache):
             self.current_frame_idx = 0
             self.loop_count += 1
             self.lbl_loop.config(text=f"Vòng lặp #{self.loop_count}")
-
-        # Schedule next tick according to FPS
-        interval_ms = max(25, int(1000 / self.fps))
-        self.root.after(interval_ms, self._transmission_tick)
+        self.root.after(max(30, int(1000 / self.fps)), self._transmission_tick)
 
     def _display_current_frame(self):
-        if not self.qr_cache:
+        imgs = self.qr_cache
+        if not imgs:
             return
-
-        total = len(self.qr_cache)
+        total = len(imgs)
+        count = self._frames_per_view()
         idx = self.current_frame_idx % total
+        self._draw_frames([imgs[(idx + i) % total] for i in range(count)])
+        self.progress_var.set(((idx + 1) / total) * 100)
+        self.lbl_progress_text.config(text=f"Khung {idx + 1}/{total} | {count} mã/lần | Vòng #{self.loop_count}")
 
-        if self.grid_mode == "1x1":
-            img = self.qr_cache[idx]
-            self._render_image_on_canvas(img)
-            self.progress_var.set(((idx + 1) / total) * 100)
-            self.lbl_progress_text.config(text=f"Mảnh: {idx + 1}/{total} ({int(((idx + 1)/total)*100)}%)")
-        elif self.grid_mode == "1x2":
-            # 1x2 Dual Mode: 2 large QR codes side by side
-            w, h = 320, 320
-            dual_img = Image.new("RGB", (w * 2 + 30, h), "white")
-            for sub_i in range(2):
-                curr_idx = (idx + sub_i) % total
-                sub_qr = self.qr_cache[curr_idx].resize((w, h), Image.Resampling.NEAREST)
-                pos_x = sub_i * (w + 30)
-                dual_img.paste(sub_qr, (pos_x, 0))
-
-            self._render_image_on_canvas(dual_img)
-            active_chunk = min(total, idx + 2)
-            self.progress_var.set((active_chunk / total) * 100)
-            self.lbl_progress_text.config(
-                text=f"Song song 2 mã: Mảnh {idx + 1}-{active_chunk}/{total} ({int((active_chunk/total)*100)}%)"
-            )
-        else:
-            # 2x2 Grid Mode: Combine 4 QR codes into 1 image
-            w, h = 260, 260
-            grid_img = Image.new("RGB", (w * 2, h * 2), "white")
-            for sub_i in range(4):
-                curr_idx = (idx + sub_i) % total
-                sub_qr = self.qr_cache[curr_idx].resize((w - 10, h - 10), Image.Resampling.NEAREST)
-                pos_x = (sub_i % 2) * w + 5
-                pos_y = (sub_i // 2) * h + 5
-                grid_img.paste(sub_qr, (pos_x, pos_y))
-
-            self._render_image_on_canvas(grid_img)
-            active_chunk = min(total, idx + 4)
-            self.progress_var.set((active_chunk / total) * 100)
-            self.lbl_progress_text.config(
-                text=f"Lưới 2x2: Mảnh {idx + 1}-{active_chunk}/{total} ({int((active_chunk/total)*100)}%)"
-            )
+    def _draw_frames(self, images):
+        """Compose 1/2/4 QR images on the canvas using crisp integer scaling."""
+        cw = self.canvas.winfo_width()
+        ch = self.canvas.winfo_height()
+        if cw < 50 or ch < 50:
+            cw, ch = 560, 560
+        cols, rows = {1: (1, 1), 2: (2, 1), 4: (2, 2)}[len(images)]
+        cell_w, cell_h = cw // cols, ch // rows
+        board = Image.new("L", (cw, ch), 255)
+        for i, img in enumerate(images):
+            avail = min(cell_w, cell_h) - 8
+            scale = avail // img.width
+            if scale >= 1:
+                side = img.width * scale
+            else:
+                side = max(32, avail)
+            scaled = img.resize((side, side), Image.Resampling.NEAREST)
+            x = (i % cols) * cell_w + (cell_w - side) // 2
+            y = (i // cols) * cell_h + (cell_h - side) // 2
+            board.paste(scaled, (x, y))
+        self.current_tk_image = ImageTk.PhotoImage(board)
+        self.canvas.delete("all")
+        self.canvas.create_image(0, 0, anchor=tk.NW, image=self.current_tk_image)
 
     def _render_image_on_canvas(self, pil_img):
         canvas_w = self.canvas.winfo_width()
