@@ -179,6 +179,11 @@ body {
 .camera-controls {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
+}
+
+.camera-controls .btn {
+  flex: 1 1 calc(50% - 8px);
 }
 
 /* Metrics Card */

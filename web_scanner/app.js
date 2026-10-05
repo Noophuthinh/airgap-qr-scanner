@@ -31,6 +31,7 @@ const btnDownload = $("btnDownload");
 const btnManualVT = $("btnManualVT");
 const btnSwitchCam = $("btnSwitchCam");
 const btnPauseCam = $("btnPauseCam");
+const btnTorch = $("btnTorch");
 const btnResetScan = $("btnResetScan");
 
 const vtInstantCard = $("vtInstantCard");
@@ -69,6 +70,8 @@ let totalReceivedBytes = 0;
 let bytesSinceCalc = 0;
 let lastSpeedCalc = performance.now();
 let instantVtChecked = false;
+let peakSpeedKBps = 0;
+let torchOn = false;
 
 // ---------- Camera / scanner ----------
 let videoStream = null;
@@ -98,13 +101,15 @@ async function initScanner() {
 
 async function startCamera(facingMode) {
   if (videoStream) videoStream.getTracks().forEach((t) => t.stop());
+  torchOn = false;
+  if (btnTorch) btnTorch.innerText = "💡 Bật Đèn";
   try {
     videoStream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: facingMode },
         width: { ideal: 1920 },
         height: { ideal: 1080 },
-        frameRate: { ideal: 30 },
+        frameRate: { ideal: 60, min: 30 },
       },
       audio: false,
     });
@@ -115,6 +120,7 @@ async function startCamera(facingMode) {
       const caps = track.getCapabilities ? track.getCapabilities() : {};
       const adv = {};
       if (caps.focusMode && caps.focusMode.includes("continuous")) adv.focusMode = "continuous";
+      if (caps.exposureMode && caps.exposureMode.includes("continuous")) adv.exposureMode = "continuous";
       if (Object.keys(adv).length) await track.applyConstraints({ advanced: [adv] });
     } catch (e) {
       /* best effort */
@@ -142,8 +148,10 @@ async function scanLoop() {
     if (barcodeDetector) {
       try {
         const codes = await barcodeDetector.detect(video);
-        for (const c of codes) handleRawData(c.rawValue);
-        decoded = true;
+        if (codes && codes.length > 0) {
+          for (const c of codes) handleRawData(c.rawValue);
+          decoded = true;
+        }
       } catch (e) {
         decoded = false;
       }
@@ -158,7 +166,7 @@ function scanWithJsQR() {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   if (!vw || !vh) return;
-  const scale = Math.min(1, 960 / Math.max(vw, vh));
+  const scale = Math.min(1, 720 / Math.max(vw, vh));
   const w = Math.round(vw * scale);
   const h = Math.round(vh * scale);
   if (canvas.width !== w || canvas.height !== h) {
@@ -336,7 +344,9 @@ function updateSpeedMeter(now) {
   const dt = (now - lastSpeedCalc) / 1000;
   if (dt >= 0.5) {
     if (transferStartTime && session && !session.done) {
-      valSpeed.innerText = `${(bytesSinceCalc / 1024 / dt).toFixed(1)} KB/s`;
+      const cur = bytesSinceCalc / 1024 / dt;
+      if (cur > peakSpeedKBps) peakSpeedKBps = cur;
+      valSpeed.innerText = `${cur.toFixed(1)} KB/s (Đỉnh: ${peakSpeedKBps.toFixed(1)})`;
     }
     bytesSinceCalc = 0;
     lastSpeedCalc = now;
@@ -405,6 +415,7 @@ function resetUi() {
   transferStartTime = null;
   totalReceivedBytes = 0;
   bytesSinceCalc = 0;
+  peakSpeedKBps = 0;
   instantVtChecked = false;
   resultCard.style.display = "none";
   vtInstantCard.style.display = "none";
@@ -578,6 +589,23 @@ btnSwitchCam.addEventListener("click", () => {
 btnPauseCam.addEventListener("click", () => {
   isPaused = !isPaused;
   btnPauseCam.innerText = isPaused ? "▶️ Tiếp tục" : "⏸️ Tạm dừng";
+});
+
+btnTorch.addEventListener("click", async () => {
+  if (!videoStream) return;
+  const track = videoStream.getVideoTracks()[0];
+  const caps = track.getCapabilities ? track.getCapabilities() : {};
+  if (!caps.torch) {
+    alert("Camera trên thiết bị này không hỗ trợ bật đèn Flash.");
+    return;
+  }
+  try {
+    torchOn = !torchOn;
+    await track.applyConstraints({ advanced: [{ torch: torchOn }] });
+    btnTorch.innerText = torchOn ? "🔦 Tắt Đèn" : "💡 Bật Đèn";
+  } catch (e) {
+    console.warn("Torch error:", e);
+  }
 });
 
 btnResetScan.addEventListener("click", () => {

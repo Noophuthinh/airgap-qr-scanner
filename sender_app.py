@@ -54,7 +54,7 @@ class AirGapSenderGUI:
         self.is_transmitting = False
         self.current_frame_idx = 0
         self.loop_count = 1
-        self.fps = 10
+        self.fps = 14
         self.grid_mode = "1x1"  # "1x1", "1x2", or "2x2"
         self._chunk_after = None
         self._prep_token = 0
@@ -169,6 +169,36 @@ class AirGapSenderGUI:
         )
         settings_frame.pack(fill=tk.X, pady=(0, 15))
 
+        # Speed Presets Buttons
+        preset_lbl = tk.Label(
+            settings_frame, text="⚡ Cấu hình tốc độ nhanh:", fg="#ffb800", bg="#151c2c",
+            font=("Segoe UI", 8, "bold")
+        )
+        preset_lbl.pack(anchor="w", pady=(0, 4))
+        preset_box = tk.Frame(settings_frame, bg="#151c2c")
+        preset_box.pack(fill=tk.X, pady=(0, 8))
+
+        self.btn_preset_std = tk.Button(
+            preset_box, text="🐢 Chuẩn\n~6 KB/s", font=("Segoe UI", 8),
+            bg="#232f48", fg="#f0f4fc", relief="flat", cursor="hand2", padx=2, pady=3,
+            command=lambda: self._apply_preset(800, 10)
+        )
+        self.btn_preset_std.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+
+        self.btn_preset_fast = tk.Button(
+            preset_box, text="🚀 Nhanh\n~12 KB/s", font=("Segoe UI", 8, "bold"),
+            bg="#0072ff", fg="white", relief="flat", cursor="hand2", padx=2, pady=3,
+            command=lambda: self._apply_preset(1100, 14)
+        )
+        self.btn_preset_fast.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+
+        self.btn_preset_turbo = tk.Button(
+            preset_box, text="⚡ Siêu tốc\n~20 KB/s", font=("Segoe UI", 8, "bold"),
+            bg="#232f48", fg="#00e676", relief="flat", cursor="hand2", padx=2, pady=3,
+            command=lambda: self._apply_preset(1400, 18)
+        )
+        self.btn_preset_turbo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
+
         # FPS Slider
         fps_box = tk.Frame(settings_frame, bg="#151c2c")
         fps_box.pack(fill=tk.X, pady=4)
@@ -185,14 +215,14 @@ class AirGapSenderGUI:
         # Chunk Size Slider
         chunk_box = tk.Frame(settings_frame, bg="#151c2c")
         chunk_box.pack(fill=tk.X, pady=4)
-        self.lbl_chunk_size = tk.Label(chunk_box, text="Kích thước mảnh: 800 bytes", fg="#f0f4fc", bg="#151c2c", font=("Segoe UI", 9))
+        self.lbl_chunk_size = tk.Label(chunk_box, text="Kích thước mảnh: 1100 bytes", fg="#f0f4fc", bg="#151c2c", font=("Segoe UI", 9))
         self.lbl_chunk_size.pack(side=tk.LEFT)
         self.slider_chunk = tk.Scale(
             settings_frame, from_=300, to=2000, resolution=50, orient=tk.HORIZONTAL,
             bg="#151c2c", fg="white", highlightthickness=0,
             command=self._on_chunk_change
         )
-        self.slider_chunk.set(800)
+        self.slider_chunk.set(1100)
         self.slider_chunk.pack(fill=tk.X, pady=(0, 4))
 
         btn_auto_chunk = tk.Button(
@@ -367,11 +397,17 @@ class AirGapSenderGUI:
                 self.root.after_cancel(self._chunk_after)
             self._chunk_after = self.root.after(500, self._process_and_prepare_file)
 
+    def _apply_preset(self, chunk_size: int, fps: int):
+        self.slider_fps.set(fps)
+        self.slider_chunk.set(chunk_size)
+        self._on_fps_change(fps)
+        self._on_chunk_change(chunk_size)
+
     def _on_auto_optimize_chunks(self):
-        """Pick a chunk size giving roughly 35 data frames (sweet spot for phone cameras)."""
+        """Pick a chunk size giving roughly 25-30 data frames (sweet spot for high-speed phone scanning)."""
         if not self.file_info:
             return
-        optimal = max(400, min(1400, int(self.file_info["compressed_size"] / 35)))
+        optimal = max(600, min(1500, int(self.file_info["compressed_size"] / 25)))
         optimal = (optimal // 50) * 50
         self.slider_chunk.set(optimal)  # triggers the debounced rebuild
 
@@ -504,7 +540,7 @@ class AirGapSenderGUI:
             self.current_frame_idx = 0
             self.loop_count += 1
             self.lbl_loop.config(text=f"Vòng lặp #{self.loop_count}")
-        self.root.after(max(30, int(1000 / self.fps)), self._transmission_tick)
+        self.root.after(max(10, int(1000 / self.fps)), self._transmission_tick)
 
     def _display_current_frame(self):
         imgs = self.qr_cache
