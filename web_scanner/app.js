@@ -90,7 +90,6 @@ const canvasLeft = $("canvasLeft");
 const canvasRight = $("canvasRight");
 const ctxLeft = canvasLeft.getContext("2d", { willReadFrequently: true });
 const ctxRight = canvasRight.getContext("2d", { willReadFrequently: true });
-const debugStatusText = $("debugStatusText");
 
 let detectorLeft = null;
 let detectorRight = null;
@@ -281,36 +280,13 @@ async function scanLoop() {
       } catch (e) {}
     }
 
-    // Fix 5: Visual Debug View Feedback
-    const hasLeft = codesLeft && codesLeft.length > 0;
-    const hasRight = codesRight && codesRight.length > 0;
-
-    if (hasLeft) canvasLeft.classList.add("detected");
-    else canvasLeft.classList.remove("detected");
-
-    if (hasRight) canvasRight.classList.add("detected");
-    else canvasRight.classList.remove("detected");
-
-    if (debugStatusText) {
-      const leftStatus = hasLeft ? "OK" : "Trống";
-      const rightStatus = hasRight ? "OK" : "Trống";
-      debugStatusText.innerText = `[Trái: ${leftStatus}] - [Phải: ${rightStatus}]`;
-      if (hasLeft && hasRight) {
-        debugStatusText.style.color = "#00e676"; // Both OK -> green
-      } else if (hasLeft || hasRight) {
-        debugStatusText.style.color = "#00f0ff"; // One OK -> cyan
-      } else {
-        debugStatusText.style.color = "#ff3860"; // None -> red
-      }
-    }
-
     // Dispatch detected codes into Fountain pipeline
-    if (hasLeft) {
+    if (codesLeft && codesLeft.length > 0) {
       for (const c of codesLeft) {
         dispatchBarcode(c.rawValue);
       }
     }
-    if (hasRight) {
+    if (codesRight && codesRight.length > 0) {
       for (const c of codesRight) {
         dispatchBarcode(c.rawValue);
       }

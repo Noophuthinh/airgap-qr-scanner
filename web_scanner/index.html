@@ -27,6 +27,8 @@
       <div class="video-wrapper">
         <video id="video" playsinline autoplay muted></video>
         <canvas id="canvas" style="display: none;"></canvas>
+        <canvas id="canvasLeft" style="display: none;"></canvas>
+        <canvas id="canvasRight" style="display: none;"></canvas>
         <div class="scan-reticle">
           <div class="reticle-corner top-left"></div>
           <div class="reticle-corner top-right"></div>
@@ -42,24 +44,6 @@
         <button id="btnPauseCam" class="btn small-btn">⏸️ Tạm dừng</button>
         <button id="btnTorch" class="btn small-btn">💡 Bật Đèn</button>
         <button id="btnResetScan" class="btn small-btn danger">🗑️ Quét lại</button>
-      </div>
-
-      <!-- Dual QR Debug View (Live Slicing & Detection Status) -->
-      <div class="dual-debug-panel" id="dualDebugPanel">
-        <div class="debug-hud-header">
-          <span class="debug-title">🔍 Dual QR Debugger</span>
-          <span class="debug-status" id="debugStatusText">[Trái: Trống] - [Phải: Trống]</span>
-        </div>
-        <div class="debug-canvases-container">
-          <div class="debug-canvas-box">
-            <span class="canvas-label">Canvas Trái (0% - 60%)</span>
-            <canvas id="canvasLeft" class="debug-canvas"></canvas>
-          </div>
-          <div class="debug-canvas-box">
-            <span class="canvas-label">Canvas Phải (40% - 100%)</span>
-            <canvas id="canvasRight" class="debug-canvas"></canvas>
-          </div>
-        </div>
       </div>
     </div>
 
