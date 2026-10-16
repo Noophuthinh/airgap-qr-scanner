@@ -342,38 +342,17 @@ async function checkCompletion() {
 
   let data = all.subarray(0, session.meta.len);
 
-  // Decompression via native DecompressionStream('deflate-raw') or pako.inflateRaw
+  // Decompression
   if (session.meta.z) {
-    let decompressed = null;
-    if (typeof DecompressionStream !== 'undefined') {
-      try {
-        const ds = new DecompressionStream('deflate-raw');
-        const writer = ds.writable.getWriter();
-        writer.write(data);
-        writer.close();
-        const resp = new Response(ds.readable);
-        const buf = await resp.arrayBuffer();
-        decompressed = new Uint8Array(buf);
-      } catch (errStream) {
-        console.warn('DecompressionStream error:', errStream);
-      }
+    try {
+      data = pako.inflate(data);
+    } catch (e) {
+      self.postMessage({
+        type: 'error',
+        message: 'Lỗi giải nén zlib: ' + e.message,
+      });
+      return;
     }
-    if (!decompressed) {
-      try {
-        decompressed = pako.inflateRaw(data);
-      } catch (errRaw) {
-        try {
-          decompressed = pako.inflate(data);
-        } catch (e) {
-          self.postMessage({
-            type: 'error',
-            message: 'Lỗi giải nén deflate-raw: ' + e.message,
-          });
-          return;
-        }
-      }
-    }
-    data = decompressed;
   }
 
   // SHA-256 computation
@@ -416,13 +395,6 @@ self.onmessage = async function (e) {
 
   if (msg.type === 'reset') {
     session = null;
-    return;
-  }
-
-  if (msg.type === 'data') {
-    if (msg.text) {
-      await handleRawData(msg.text);
-    }
     return;
   }
 

@@ -85,42 +85,11 @@ let isPaused = false;
 let frameCount = 0;
 let lastFpsTime = performance.now();
 
-// Hidden Center-Crop DOM Canvas & Hardware BarcodeDetector
-const cropCanvas = $("cropCanvas");
-const cropCtx = cropCanvas.getContext("2d", { willReadFrequently: true });
-
-let barcodeDetector = null;
-let scanningBusy = false;
-
 // ---------- Initialization ----------
 async function initScanner() {
   initWorker();
-
-  if ("BarcodeDetector" in window) {
-    try {
-      const formats = await BarcodeDetector.getSupportedFormats();
-      if (formats.includes("qr_code")) {
-        barcodeDetector = new BarcodeDetector({ formats: ["qr_code"] });
-        engineBadge.innerText = "Engine: Hardware BarcodeDetector (GPU/NPU)";
-      }
-    } catch (e) {
-      console.warn("BarcodeDetector init error:", e);
-    }
-  }
-  if (!barcodeDetector) {
-    engineBadge.innerText = "Engine: WASM/Software Fallback";
-  }
-
   await startCamera(currentFacingMode);
-  scheduleNextScan();
-
-  // Tap-to-focus on camera viewfinder
-  const wrapper = document.querySelector(".video-wrapper");
-  if (wrapper) {
-    wrapper.addEventListener("click", () => {
-      triggerAutoFocus();
-    });
-  }
+  requestAnimationFrame(scanLoop);
 }
 
 function initWorker() {
@@ -144,59 +113,38 @@ async function startCamera(facingMode) {
   if (btnTorch) btnTorch.innerText = "💡 Bật Đèn";
 
   try {
-    // 1080p standard camera stream allows native Continuous AutoFocus (CAF / PDAF)
     videoStream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: facingMode },
-        width: { ideal: 1920, min: 1280 },
-        height: { ideal: 1080, min: 720 },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 60, min: 30 },
       },
       audio: false,
     });
     video.srcObject = videoStream;
     await video.play();
 
-    // Ensure continuous autofocus without locking
-    await triggerAutoFocus();
+    // Hardware camera optimizations (Continuous AF & Auto Exposure)
+    try {
+      const track = videoStream.getVideoTracks()[0];
+      const caps = track.getCapabilities ? track.getCapabilities() : {};
+      const adv = {};
+      if (caps.focusMode && caps.focusMode.includes("continuous")) adv.focusMode = "continuous";
+      if (caps.exposureMode && caps.exposureMode.includes("continuous")) adv.exposureMode = "continuous";
+      if (Object.keys(adv).length) await track.applyConstraints({ advanced: [adv] });
+    } catch (e) {
+      /* best effort */
+    }
   } catch (err) {
     alert("Không thể truy cập Camera: " + err.message);
   }
 }
 
-async function triggerAutoFocus() {
-  if (!videoStream) return;
-  const track = videoStream.getVideoTracks()[0];
-  if (!track) return;
-
-  try {
-    const caps = track.getCapabilities ? track.getCapabilities() : {};
-    const adv = {};
-    if (caps.focusMode && caps.focusMode.includes("continuous")) {
-      adv.focusMode = "continuous";
-    }
-    if (caps.exposureMode && caps.exposureMode.includes("continuous")) {
-      adv.exposureMode = "continuous";
-    }
-    if (Object.keys(adv).length > 0) {
-      await track.applyConstraints({ advanced: [adv] });
-    }
-  } catch (e) {
-    console.warn("Autofocus warning:", e);
-  }
-}
-
-// ---------- High-Speed Scan Loop (requestVideoFrameCallback + Full-Res GPU Detector) ----------
-function scheduleNextScan() {
-  if ("requestVideoFrameCallback" in video) {
-    video.requestVideoFrameCallback(scanFrame);
-  } else {
-    requestAnimationFrame(scanFrame);
-  }
-}
-
-async function scanFrame() {
-  scheduleNextScan();
-  if (isPaused || scanningBusy || video.readyState < 2) return;
+// ---------- Main Render Loop (Smooth 60 FPS) ----------
+function scanLoop() {
+  requestAnimationFrame(scanLoop);
+  if (isPaused || video.readyState < 2) return;
 
   // Track camera stream FPS
   frameCount++;
@@ -208,66 +156,34 @@ async function scanFrame() {
   }
   updateSpeedMeter(now);
 
+  // If worker is currently busy decoding previous frame, skip to prevent backlog
+  if (workerBusy || !worker) return;
+
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   if (!vw || !vh) return;
 
-  scanningBusy = true;
-  try {
-    let barcodes = [];
+  // ROI Cropping: match the central square reticle
+  // Cuts pixel area by ~89%, radically speeding up detection
+  const cropSize = Math.floor(Math.min(vw, vh) * 0.82);
+  const sx = Math.floor((vw - cropSize) / 2);
+  const sy = Math.floor((vh - cropSize) / 2);
 
-    if (barcodeDetector) {
-      try {
-        // Native GPU BarcodeDetector processes the high-res video frame directly
-        barcodes = await barcodeDetector.detect(video);
-      } catch (detErr) {
-        console.warn("BarcodeDetector error:", detErr);
-      }
-    } else {
-      // Fallback for software decoders: crop center 75% at crisp resolution
-      const cropSize = Math.floor(Math.min(vw, vh) * 0.75);
-      const sx = Math.floor((vw - cropSize) / 2);
-      const sy = Math.floor((vh - cropSize) / 2);
-      const TARGET_SIZE = Math.min(640, cropSize);
+  workerBusy = true;
 
-      if (cropCanvas.width !== TARGET_SIZE || cropCanvas.height !== TARGET_SIZE) {
-        cropCanvas.width = TARGET_SIZE;
-        cropCanvas.height = TARGET_SIZE;
-      }
-      cropCtx.drawImage(video, sx, sy, cropSize, cropSize, 0, 0, TARGET_SIZE, TARGET_SIZE);
-
-      if (typeof ZXingWASM !== "undefined" && ZXingWASM.readBarcodesFromImageData) {
-        try {
-          const imgData = cropCtx.getImageData(0, 0, TARGET_SIZE, TARGET_SIZE);
-          const res = await ZXingWASM.readBarcodesFromImageData(imgData, { formats: ["QRCode"] });
-          if (res && res.length > 0) barcodes = res.map((r) => ({ rawValue: r.text }));
-        } catch (e) {}
-      } else if (typeof jsQR !== "undefined") {
-        try {
-          const imgData = cropCtx.getImageData(0, 0, TARGET_SIZE, TARGET_SIZE);
-          const code = jsQR(imgData.data, TARGET_SIZE, TARGET_SIZE, { inversionAttempts: "dontInvert" });
-          if (code && code.data) barcodes = [{ rawValue: code.data }];
-        } catch (e) {}
-      }
-    }
-
-    if (barcodes && barcodes.length > 0) {
-      for (const b of barcodes) {
-        dispatchBarcode(b.rawValue);
-      }
-    }
-  } catch (err) {
-    console.warn("scanFrame error:", err);
-  } finally {
-    scanningBusy = false;
-  }
-}
-
-function dispatchBarcode(text) {
-  if (!text) return;
-  if (worker) {
-    worker.postMessage({ type: "data", text });
-  }
+  // Hardware GPU Crop & Downscale via createImageBitmap
+  createImageBitmap(video, sx, sy, cropSize, cropSize, {
+    resizeWidth: 480,
+    resizeHeight: 480,
+  })
+    .catch(() => createImageBitmap(video, sx, sy, cropSize, cropSize))
+    .then((bitmap) => {
+      // Transferable object: zero-copy transfer to Worker
+      worker.postMessage({ type: "frame", bitmap }, [bitmap]);
+    })
+    .catch(() => {
+      workerBusy = false;
+    });
 }
 
 // ---------- Worker Message Dispatcher ----------
