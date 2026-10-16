@@ -114,7 +114,7 @@ class PacketProtocol:
         padded = payload + pad_bytes
         blocks = [padded[i * size:(i + 1) * size] for i in range(k)]
 
-        repair = max(6, k // 3)
+        repair = max(10, k // 2)
         data_frames: List[str] = []
         for idx in range(k):
             data_frames.append(f"Q2:{file_id}:{k:X}:{idx:X}:{b45encode(blocks[idx])}")

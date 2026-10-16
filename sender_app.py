@@ -63,7 +63,8 @@ class AirGapSenderGUI:
         # Application state
         self.current_file_path = None
         self.file_info = None
-        self.qr_cache = []  # Pre-rendered PIL Images
+        self.packets = []
+        self.qr_cache = {}  # idx -> PIL Image (JIT / prefetch cache)
         self.is_transmitting = False
         self.current_frame_idx = 0
         self.loop_count = 1
@@ -192,25 +193,32 @@ class AirGapSenderGUI:
         preset_box.pack(fill=tk.X, pady=(0, 8))
 
         self.btn_preset_std = tk.Button(
-            preset_box, text="🐢 Chuẩn\n~6 KB/s", font=("Segoe UI", 8),
-            bg="#232f48", fg="#f0f4fc", relief="flat", cursor="hand2", padx=2, pady=3,
+            preset_box, text="🐢 Chuẩn\n~6 KB/s", font=("Segoe UI", 7),
+            bg="#232f48", fg="#f0f4fc", relief="flat", cursor="hand2", padx=1, pady=3,
             command=lambda: self._apply_preset(800, 10)
         )
         self.btn_preset_std.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
 
         self.btn_preset_fast = tk.Button(
-            preset_box, text="🚀 Nhanh\n~12 KB/s", font=("Segoe UI", 8, "bold"),
-            bg="#0072ff", fg="white", relief="flat", cursor="hand2", padx=2, pady=3,
+            preset_box, text="🚀 Nhanh\n~12 KB/s", font=("Segoe UI", 7, "bold"),
+            bg="#0072ff", fg="white", relief="flat", cursor="hand2", padx=1, pady=3,
             command=lambda: self._apply_preset(1100, 14)
         )
-        self.btn_preset_fast.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+        self.btn_preset_fast.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
 
         self.btn_preset_turbo = tk.Button(
-            preset_box, text="⚡ Siêu tốc\n~20 KB/s", font=("Segoe UI", 8, "bold"),
-            bg="#232f48", fg="#00e676", relief="flat", cursor="hand2", padx=2, pady=3,
+            preset_box, text="⚡ Siêu tốc\n~20 KB/s", font=("Segoe UI", 7, "bold"),
+            bg="#232f48", fg="#ffb800", relief="flat", cursor="hand2", padx=1, pady=3,
             command=lambda: self._apply_preset(1400, 18)
         )
-        self.btn_preset_turbo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
+        self.btn_preset_turbo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
+
+        self.btn_preset_max = tk.Button(
+            preset_box, text="🏎️ Thần tốc\n~28 KB/s", font=("Segoe UI", 7, "bold"),
+            bg="#232f48", fg="#00e676", relief="flat", cursor="hand2", padx=1, pady=3,
+            command=lambda: self._apply_preset(1650, 20)
+        )
+        self.btn_preset_max.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
 
         # FPS Slider
         fps_box = tk.Frame(settings_frame, bg="#151c2c")
@@ -430,7 +438,7 @@ class AirGapSenderGUI:
             self.grid_mode = "1x2"
         else:
             self.grid_mode = "1x1"
-        if not self.is_transmitting and self.qr_cache:
+        if not self.is_transmitting and self.packets:
             self._display_current_frame()
 
     @staticmethod
@@ -455,80 +463,86 @@ class AirGapSenderGUI:
         return Image.frombytes("L", (n, n), b"".join(rows))
 
     def _process_and_prepare_file(self):
-        """Compress + encode + render QR frames in a background thread (UI stays responsive)."""
+        """Prepares packets instantly and starts non-blocking streaming + prefetch."""
         self._chunk_after = None
         if not self.current_file_path:
             return
         self._prep_token += 1
         token = self._prep_token
         self.is_transmitting = False
-        self.qr_cache = []
+        self.packets = []
+        self.qr_cache = {}
         self.btn_start.config(text="▶️ BẮT ĐẦU PHÁT QR", bg="#00e676", state=tk.DISABLED)
-        self.lbl_status.config(text="Đang xử lý file...", fg="#ffb800")
+        self.lbl_status.config(text="Đang nạp file...", fg="#ffb800")
 
-        state = {"info": None, "images": [], "error": None, "done": False, "shown": False}
-        self._prep_state = state
         chunk_size = int(self.slider_chunk.get())
         path = self.current_file_path
 
         def worker():
             try:
+                # 1. Prepare packets in memory (fast: ~0.05 - 0.2s)
                 info = PacketProtocol.prepare_file(path, chunk_size=chunk_size)
-                state["info"] = info
-                for pkt in info["packets"]:
+                if token != self._prep_token:
+                    return
+                packets = info["packets"]
+                if not packets:
+                    return
+
+                # 2. Render frame 0 immediately
+                img0 = self._make_qr_image(packets[0])
+                if token != self._prep_token:
+                    return
+
+                def on_ready():
                     if token != self._prep_token:
                         return
-                    state["images"].append(self._make_qr_image(pkt))
-                    time.sleep(0.001)  # yield the GIL so Tk stays smooth
-            except Exception as e:  # noqa: BLE001
-                state["error"] = str(e)
-            state["done"] = True
+                    self.packets = packets
+                    self.file_info = info
+                    self.qr_cache = {0: img0}
+                    self.lbl_file_name.config(text=f"Tệp: {info['file_name']}")
+                    self.lbl_orig_size.config(text=f"Kích thước gốc: {self._format_bytes(info['orig_size'])}")
+                    ratio = (1 - info["compressed_size"] / max(1, info["orig_size"])) * 100
+                    note = "nén zlib" if info["compressed"] else "không nén (dữ liệu đã nén sẵn)"
+                    self.lbl_comp_size.config(
+                        text=f"Dữ liệu gửi: {self._format_bytes(info['compressed_size'])} ({note}, {ratio:+.1f}%)"
+                    )
+                    self.lbl_chunks_count.config(
+                        text=f"Mảnh gốc: {info['total_chunks']} | Tổng khung: {len(packets)}"
+                    )
+                    self.lbl_md5.config(text=f"MD5: {info['orig_md5']}")
+                    self.btn_start.config(state=tk.NORMAL)
+                    self.lbl_status.config(text="Đã sẵn sàng. Nhấn Bắt Đầu để truyền!", fg="#00e676")
+                    self.current_frame_idx = 0
+                    self.loop_count = 1
+                    self._display_current_frame()
+
+                    # 3. Background prefetcher with 6ms sleep so GUI stays at 120 FPS buttery smooth
+                    def prefetch_loop():
+                        for i in range(1, len(packets)):
+                            if token != self._prep_token:
+                                return
+                            if i not in self.qr_cache:
+                                img = self._make_qr_image(packets[i])
+                                self.qr_cache[i] = img
+                            time.sleep(0.006)
+
+                    threading.Thread(target=prefetch_loop, daemon=True).start()
+
+                self.root.after(0, on_ready)
+
+            except Exception as e:
+                def on_error(err=str(e)):
+                    if token != self._prep_token:
+                        return
+                    messagebox.showerror("Lỗi", f"Không thể xử lý file: {err}")
+                    self.lbl_status.config(text="Lỗi xử lý file", fg="#ff3860")
+                self.root.after(0, on_error)
 
         threading.Thread(target=worker, daemon=True).start()
-        self._poll_prepare(token)
-
-    def _poll_prepare(self, token):
-        if token != self._prep_token:
-            return
-        state = self._prep_state
-        if state["error"]:
-            messagebox.showerror("Lỗi", f"Không thể xử lý file: {state['error']}")
-            self.lbl_status.config(text="Lỗi xử lý file", fg="#ff3860")
-            return
-
-        info = state["info"]
-        if info and not state["shown"]:
-            state["shown"] = True
-            self.file_info = info
-            self.lbl_file_name.config(text=f"Tệp: {info['file_name']}")
-            self.lbl_orig_size.config(text=f"Kích thước gốc: {self._format_bytes(info['orig_size'])}")
-            ratio = (1 - info["compressed_size"] / max(1, info["orig_size"])) * 100
-            note = "nén zlib" if info["compressed"] else "không nén (dữ liệu đã nén sẵn)"
-            self.lbl_comp_size.config(
-                text=f"Dữ liệu gửi: {self._format_bytes(info['compressed_size'])} ({note}, {ratio:+.1f}%)"
-            )
-            self.lbl_chunks_count.config(
-                text=f"Mảnh gốc: {info['total_chunks']} | Tổng khung: {len(info['packets'])}"
-            )
-            self.lbl_md5.config(text=f"MD5: {info['orig_md5']}")
-
-        if info:
-            done = len(state["images"])
-            total = len(info["packets"])
-            if state["done"]:
-                self.qr_cache = state["images"]
-                self.btn_start.config(state=tk.NORMAL)
-                self.lbl_status.config(text="Đã sẵn sàng. Nhấn Bắt Đầu để truyền!", fg="#00e676")
-                self.current_frame_idx = 0
-                self.loop_count = 1
-                self._display_current_frame()
-                return
-            self.lbl_status.config(text=f"Đang tạo mã QR {done}/{total}...", fg="#ffb800")
-        self.root.after(100, self._poll_prepare, token)
 
     def _toggle_transmission(self):
         if not self.is_transmitting:
-            if not self.qr_cache:
+            if not self.packets:
                 return
             self.is_transmitting = True
             self.btn_start.config(text="⏹️ TẠM DỪNG PHÁT", bg="#ff3860")
@@ -542,25 +556,36 @@ class AirGapSenderGUI:
     def _frames_per_view(self):
         return {"1x1": 1, "1x2": 2, "2x2": 4}[self.grid_mode]
 
+    def _get_frame_image(self, idx: int) -> Image.Image:
+        """Retrieves from cache or renders just-in-time."""
+        if not self.packets:
+            return None
+        idx = idx % len(self.packets)
+        img = self.qr_cache.get(idx)
+        if img is None:
+            img = self._make_qr_image(self.packets[idx])
+            self.qr_cache[idx] = img
+        return img
+
     def _transmission_tick(self):
         if not self.is_transmitting:
             return
         self._display_current_frame()
         self.current_frame_idx += self._frames_per_view()
-        if self.current_frame_idx >= len(self.qr_cache):
+        if self.packets and self.current_frame_idx >= len(self.packets):
             self.current_frame_idx = 0
             self.loop_count += 1
             self.lbl_loop.config(text=f"Vòng lặp #{self.loop_count}")
         self.root.after(max(10, int(1000 / self.fps)), self._transmission_tick)
 
     def _display_current_frame(self):
-        imgs = self.qr_cache
-        if not imgs:
+        if not self.packets:
             return
-        total = len(imgs)
+        total = len(self.packets)
         count = self._frames_per_view()
         idx = self.current_frame_idx % total
-        self._draw_frames([imgs[(idx + i) % total] for i in range(count)])
+        imgs = [self._get_frame_image((idx + i) % total) for i in range(count)]
+        self._draw_frames(imgs)
         self.progress_var.set(((idx + 1) / total) * 100)
         self.lbl_progress_text.config(text=f"Khung {idx + 1}/{total} | {count} mã/lần | Vòng #{self.loop_count}")
 
