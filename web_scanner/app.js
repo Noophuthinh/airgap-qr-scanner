@@ -85,9 +85,38 @@ let isPaused = false;
 let frameCount = 0;
 let lastFpsTime = performance.now();
 
+// Dual QR DOM Canvas elements & Detectors
+const canvasLeft = $("canvasLeft");
+const canvasRight = $("canvasRight");
+const ctxLeft = canvasLeft.getContext("2d", { willReadFrequently: true });
+const ctxRight = canvasRight.getContext("2d", { willReadFrequently: true });
+const debugStatusText = $("debugStatusText");
+
+let detectorLeft = null;
+let detectorRight = null;
+let scanningBusy = false;
+
 // ---------- Initialization ----------
 async function initScanner() {
   initWorker();
+
+  // Fix 1: Initialize 2 independent BarcodeDetector instances
+  if ("BarcodeDetector" in window) {
+    try {
+      const formats = await BarcodeDetector.getSupportedFormats();
+      if (formats.includes("qr_code")) {
+        detectorLeft = new BarcodeDetector({ formats: ["qr_code"] });
+        detectorRight = new BarcodeDetector({ formats: ["qr_code"] });
+        engineBadge.innerText = "Engine: Dual Native BarcodeDetector (GPU/NPU)";
+      }
+    } catch (e) {
+      console.warn("BarcodeDetector init error:", e);
+    }
+  }
+  if (!detectorLeft) {
+    engineBadge.innerText = "Engine: Dual Fallback Scanner";
+  }
+
   await startCamera(currentFacingMode);
   requestAnimationFrame(scanLoop);
 }
@@ -141,10 +170,10 @@ async function startCamera(facingMode) {
   }
 }
 
-// ---------- Main Render Loop (Smooth 60 FPS) ----------
-function scanLoop() {
+// ---------- Main Render Loop (Sequential Dual QR + Overlapping 60/60) ----------
+async function scanLoop() {
   requestAnimationFrame(scanLoop);
-  if (isPaused || video.readyState < 2) return;
+  if (isPaused || scanningBusy || video.readyState < 2) return;
 
   // Track camera stream FPS
   frameCount++;
@@ -156,34 +185,148 @@ function scanLoop() {
   }
   updateSpeedMeter(now);
 
-  // If worker is currently busy decoding previous frame, skip to prevent backlog
-  if (workerBusy || !worker) return;
-
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   if (!vw || !vh) return;
 
-  // ROI Cropping: match the central square reticle
-  // Cuts pixel area by ~89%, radically speeding up detection
-  const cropSize = Math.floor(Math.min(vw, vh) * 0.82);
-  const sx = Math.floor((vw - cropSize) / 2);
-  const sy = Math.floor((vh - cropSize) / 2);
+  scanningBusy = true;
+  try {
+    // Fix 4: Orientation Check (Portrait vs Landscape)
+    // Always align the horizontal slice with the 2 side-by-side QR codes on PC
+    let roiX, roiY, roiW, roiH;
 
-  workerBusy = true;
+    if (vh > vw) {
+      // Phone held in portrait mode (stream is tall, e.g. 720x1280)
+      // Horizontal axis across phone screen is X axis (0 to vw)
+      roiW = vw;
+      roiH = Math.floor(vw * 0.65); // Horizontal band in center
+      roiX = 0;
+      roiY = Math.floor((vh - roiH) / 2);
+    } else {
+      // Phone held in landscape mode (stream is wide, e.g. 1280x720)
+      roiH = Math.floor(vh * 0.75);
+      roiW = Math.min(vw, Math.floor(roiH * 1.8)); // 1.8:1 aspect ratio covering both QR codes
+      roiX = Math.floor((vw - roiW) / 2);
+      roiY = Math.floor((vh - roiH) / 2);
+    }
 
-  // Hardware GPU Crop & Downscale via createImageBitmap
-  createImageBitmap(video, sx, sy, cropSize, cropSize, {
-    resizeWidth: 480,
-    resizeHeight: 480,
-  })
-    .catch(() => createImageBitmap(video, sx, sy, cropSize, cropSize))
-    .then((bitmap) => {
-      // Transferable object: zero-copy transfer to Worker
-      worker.postMessage({ type: "frame", bitmap }, [bitmap]);
-    })
-    .catch(() => {
-      workerBusy = false;
-    });
+    // Fix 3: Overlapping ROI Slicing (60% / 60%)
+    // canvasLeft: 0% to 60% of ROI width
+    const sliceW_L = Math.floor(roiW * 0.6);
+    const sx_L = roiX;
+
+    // canvasRight: 40% to 100% of ROI width (60% width)
+    const sliceW_R = Math.floor(roiW * 0.6);
+    const sx_R = roiX + Math.floor(roiW * 0.4);
+
+    // Fix 2: Standard HTML DOM <canvas> dimensions (avoids Android zero-copy black textures)
+    const TARGET_W = 480;
+    const TARGET_H = Math.max(1, Math.floor(TARGET_W * (roiH / sliceW_L)));
+
+    if (canvasLeft.width !== TARGET_W || canvasLeft.height !== TARGET_H) {
+      canvasLeft.width = TARGET_W;
+      canvasLeft.height = TARGET_H;
+    }
+    if (canvasRight.width !== TARGET_W || canvasRight.height !== TARGET_H) {
+      canvasRight.width = TARGET_W;
+      canvasRight.height = TARGET_H;
+    }
+
+    ctxLeft.drawImage(video, sx_L, roiY, sliceW_L, roiH, 0, 0, TARGET_W, TARGET_H);
+    ctxRight.drawImage(video, sx_R, roiY, sliceW_R, roiH, 0, 0, TARGET_W, TARGET_H);
+
+    // Fix 1: Sequential Await (NO Promise.all to prevent Mojo IPC congestion on Android Chrome)
+    let codesLeft = [];
+    let codesRight = [];
+
+    if (detectorLeft && detectorRight) {
+      try {
+        // Sequential call 1: Left
+        codesLeft = await detectorLeft.detect(canvasLeft);
+      } catch (errLeft) {
+        console.warn("Left BarcodeDetector error:", errLeft);
+      }
+
+      try {
+        // Sequential call 2: Right (called after Left finishes)
+        codesRight = await detectorRight.detect(canvasRight);
+      } catch (errRight) {
+        console.warn("Right BarcodeDetector error:", errRight);
+      }
+    } else if (typeof ZXingWASM !== "undefined" && ZXingWASM.readBarcodesFromImageData) {
+      // Fallback WASM sequential
+      try {
+        const imgL = ctxLeft.getImageData(0, 0, TARGET_W, TARGET_H);
+        const resL = await ZXingWASM.readBarcodesFromImageData(imgL, { formats: ["QRCode"] });
+        if (resL && resL.length > 0) codesLeft = resL.map((r) => ({ rawValue: r.text }));
+      } catch (e) {}
+
+      try {
+        const imgR = ctxRight.getImageData(0, 0, TARGET_W, TARGET_H);
+        const resR = await ZXingWASM.readBarcodesFromImageData(imgR, { formats: ["QRCode"] });
+        if (resR && resR.length > 0) codesRight = resR.map((r) => ({ rawValue: r.text }));
+      } catch (e) {}
+    } else if (typeof jsQR !== "undefined") {
+      // Fallback jsQR sequential
+      try {
+        const imgL = ctxLeft.getImageData(0, 0, TARGET_W, TARGET_H);
+        const codeL = jsQR(imgL.data, TARGET_W, TARGET_H, { inversionAttempts: "dontInvert" });
+        if (codeL && codeL.data) codesLeft = [{ rawValue: codeL.data }];
+      } catch (e) {}
+
+      try {
+        const imgR = ctxRight.getImageData(0, 0, TARGET_W, TARGET_H);
+        const codeR = jsQR(imgR.data, TARGET_W, TARGET_H, { inversionAttempts: "dontInvert" });
+        if (codeR && codeR.data) codesRight = [{ rawValue: codeR.data }];
+      } catch (e) {}
+    }
+
+    // Fix 5: Visual Debug View Feedback
+    const hasLeft = codesLeft && codesLeft.length > 0;
+    const hasRight = codesRight && codesRight.length > 0;
+
+    if (hasLeft) canvasLeft.classList.add("detected");
+    else canvasLeft.classList.remove("detected");
+
+    if (hasRight) canvasRight.classList.add("detected");
+    else canvasRight.classList.remove("detected");
+
+    if (debugStatusText) {
+      const leftStatus = hasLeft ? "OK" : "Trống";
+      const rightStatus = hasRight ? "OK" : "Trống";
+      debugStatusText.innerText = `[Trái: ${leftStatus}] - [Phải: ${rightStatus}]`;
+      if (hasLeft && hasRight) {
+        debugStatusText.style.color = "#00e676"; // Both OK -> green
+      } else if (hasLeft || hasRight) {
+        debugStatusText.style.color = "#00f0ff"; // One OK -> cyan
+      } else {
+        debugStatusText.style.color = "#ff3860"; // None -> red
+      }
+    }
+
+    // Dispatch detected codes into Fountain pipeline
+    if (hasLeft) {
+      for (const c of codesLeft) {
+        dispatchBarcode(c.rawValue);
+      }
+    }
+    if (hasRight) {
+      for (const c of codesRight) {
+        dispatchBarcode(c.rawValue);
+      }
+    }
+  } catch (err) {
+    console.warn("Scan loop error:", err);
+  } finally {
+    scanningBusy = false;
+  }
+}
+
+function dispatchBarcode(text) {
+  if (!text) return;
+  if (worker) {
+    worker.postMessage({ type: "data", text });
+  }
 }
 
 // ---------- Worker Message Dispatcher ----------

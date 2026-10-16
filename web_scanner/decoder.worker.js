@@ -398,6 +398,13 @@ self.onmessage = async function (e) {
     return;
   }
 
+  if (msg.type === 'data') {
+    if (msg.text) {
+      await handleRawData(msg.text);
+    }
+    return;
+  }
+
   if (msg.type === 'frame') {
     const bitmap = msg.bitmap;
     try {
