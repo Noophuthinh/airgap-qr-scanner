@@ -131,13 +131,25 @@ class AirGapSenderGUI:
         )
         header_lbl.pack(anchor="w", pady=(0, 10))
 
-        # Select File Button
+        # Top Action Buttons: Select File (50%) + Start Transmission (50%)
+        top_btn_frame = tk.Frame(self.left_panel, bg="#151c2c")
+        top_btn_frame.pack(fill=tk.X, pady=(0, 10))
+
         self.btn_browse = tk.Button(
-            self.left_panel, text="📁 Chọn hoặc Kéo Thả Tệp...", font=("Segoe UI", 11, "bold"),
+            top_btn_frame, text="📁 Chọn Tệp...", font=("Segoe UI", 10, "bold"),
             bg="#0072ff", fg="white", activebackground="#0056c6", activeforeground="white",
-            relief="flat", cursor="hand2", padx=10, pady=8, command=self._on_browse_file
+            relief="flat", cursor="hand2", padx=6, pady=8, command=self._on_browse_file
         )
-        self.btn_browse.pack(fill=tk.X, pady=(0, 10))
+        self.btn_browse.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 3))
+
+        self.btn_start = tk.Button(
+            top_btn_frame, text="▶️ Bắt Đầu Quét", font=("Segoe UI", 10, "bold"),
+            bg="#00e676", fg="#0b0f19", activebackground="#00b85c", activeforeground="#0b0f19",
+            disabledforeground="#55657e",
+            relief="flat", cursor="hand2", padx=6, pady=8, state=tk.DISABLED,
+            command=self._toggle_transmission
+        )
+        self.btn_start.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(3, 0))
 
         # File Info Card
         self.info_frame = tk.LabelFrame(
@@ -290,14 +302,7 @@ class AirGapSenderGUI:
         )
         btn_save_url.pack(fill=tk.X)
 
-        # Transmission Action Buttons
-        self.btn_start = tk.Button(
-            self.left_panel, text="▶️ BẮT ĐẦU PHÁT QR", font=("Segoe UI", 11, "bold"),
-            bg="#00e676", fg="#0b0f19", activebackground="#00b85c", activeforeground="#0b0f19",
-            relief="flat", cursor="hand2", padx=10, pady=10, state=tk.DISABLED,
-            command=self._toggle_transmission
-        )
-        self.btn_start.pack(fill=tk.X, pady=(5, 8))
+        # Mobile Web Scanner Connect Button
 
         self.btn_connect_qr = tk.Button(
             self.left_panel, text="📱 Quét mã mở Web Scanner", font=("Segoe UI", 10),
@@ -365,7 +370,7 @@ class AirGapSenderGUI:
     def _show_connect_qr_screen(self):
         """Displays the QR code pointing to the mobile web scanner URL (Cloud or Local)."""
         self.is_transmitting = False
-        self.btn_start.config(text="▶️ BẮT ĐẦU PHÁT QR", bg="#00e676")
+        self.btn_start.config(text="▶️ Bắt Đầu Quét", bg="#00e676")
         self.lbl_status.config(text="Dùng điện thoại quét mã mở Web Scanner", fg="#00f0ff")
         self.lbl_loop.config(text="")
 
@@ -472,7 +477,7 @@ class AirGapSenderGUI:
         self.is_transmitting = False
         self.packets = []
         self.qr_cache = {}
-        self.btn_start.config(text="▶️ BẮT ĐẦU PHÁT QR", bg="#00e676", state=tk.DISABLED)
+        self.btn_start.config(text="▶️ Bắt Đầu Quét", bg="#00e676", state=tk.DISABLED)
         self.lbl_status.config(text="Đang nạp file...", fg="#ffb800")
 
         chunk_size = int(self.slider_chunk.get())
@@ -545,12 +550,12 @@ class AirGapSenderGUI:
             if not self.packets:
                 return
             self.is_transmitting = True
-            self.btn_start.config(text="⏹️ TẠM DỪNG PHÁT", bg="#ff3860")
+            self.btn_start.config(text="⏹️ TẠM DỪNG", bg="#ff3860")
             self.lbl_status.config(text=f"Đang phát luồng dữ liệu... ({self.grid_mode})", fg="#00f0ff")
             self._transmission_tick()
         else:
             self.is_transmitting = False
-            self.btn_start.config(text="▶️ TIẾP TỤC PHÁT", bg="#00e676")
+            self.btn_start.config(text="▶️ TIẾP TỤC", bg="#00e676")
             self.lbl_status.config(text="Đã tạm dừng", fg="#ffb800")
 
     def _frames_per_view(self):
