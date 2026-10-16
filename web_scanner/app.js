@@ -85,39 +85,35 @@ let isPaused = false;
 let frameCount = 0;
 let lastFpsTime = performance.now();
 
-// Dual QR DOM Canvas elements & Detectors
-const canvasLeft = $("canvasLeft");
-const canvasRight = $("canvasRight");
-const ctxLeft = canvasLeft.getContext("2d", { willReadFrequently: true });
-const ctxRight = canvasRight.getContext("2d", { willReadFrequently: true });
+// Hidden Center-Crop DOM Canvas & Hardware BarcodeDetector
+const cropCanvas = $("cropCanvas");
+const cropCtx = cropCanvas.getContext("2d", { willReadFrequently: true });
 
-let detectorLeft = null;
-let detectorRight = null;
+let barcodeDetector = null;
 let scanningBusy = false;
+let focusLocked = false;
 
 // ---------- Initialization ----------
 async function initScanner() {
   initWorker();
 
-  // Fix 1: Initialize 2 independent BarcodeDetector instances
   if ("BarcodeDetector" in window) {
     try {
       const formats = await BarcodeDetector.getSupportedFormats();
       if (formats.includes("qr_code")) {
-        detectorLeft = new BarcodeDetector({ formats: ["qr_code"] });
-        detectorRight = new BarcodeDetector({ formats: ["qr_code"] });
-        engineBadge.innerText = "Engine: Dual Native BarcodeDetector (GPU/NPU)";
+        barcodeDetector = new BarcodeDetector({ formats: ["qr_code"] });
+        engineBadge.innerText = "Engine: Hardware BarcodeDetector (GPU/NPU)";
       }
     } catch (e) {
       console.warn("BarcodeDetector init error:", e);
     }
   }
-  if (!detectorLeft) {
-    engineBadge.innerText = "Engine: Dual Fallback Scanner";
+  if (!barcodeDetector) {
+    engineBadge.innerText = "Engine: WASM/Software Fallback";
   }
 
   await startCamera(currentFacingMode);
-  requestAnimationFrame(scanLoop);
+  scheduleNextScan();
 }
 
 function initWorker() {
@@ -138,6 +134,7 @@ function initWorker() {
 async function startCamera(facingMode) {
   if (videoStream) videoStream.getTracks().forEach((t) => t.stop());
   torchOn = false;
+  focusLocked = false;
   if (btnTorch) btnTorch.innerText = "💡 Bật Đèn";
 
   try {
@@ -153,25 +150,57 @@ async function startCamera(facingMode) {
     video.srcObject = videoStream;
     await video.play();
 
-    // Hardware camera optimizations (Continuous AF & Auto Exposure)
-    try {
-      const track = videoStream.getVideoTracks()[0];
-      const caps = track.getCapabilities ? track.getCapabilities() : {};
-      const adv = {};
-      if (caps.focusMode && caps.focusMode.includes("continuous")) adv.focusMode = "continuous";
-      if (caps.exposureMode && caps.exposureMode.includes("continuous")) adv.exposureMode = "continuous";
-      if (Object.keys(adv).length) await track.applyConstraints({ advanced: [adv] });
-    } catch (e) {
-      /* best effort */
-    }
+    // Initial continuous focus & exposure
+    await applyCameraOptimizations(false);
   } catch (err) {
     alert("Không thể truy cập Camera: " + err.message);
   }
 }
 
-// ---------- Main Render Loop (Sequential Dual QR + Overlapping 60/60) ----------
-async function scanLoop() {
-  requestAnimationFrame(scanLoop);
+async function applyCameraOptimizations(lockFocusDistance = false) {
+  if (!videoStream) return;
+  const track = videoStream.getVideoTracks()[0];
+  if (!track) return;
+
+  try {
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    const adv = {};
+
+    if (caps.focusMode) {
+      if (lockFocusDistance && caps.focusMode.includes("manual")) {
+        adv.focusMode = "manual";
+        focusLocked = true;
+      } else if (caps.focusMode.includes("continuous")) {
+        adv.focusMode = "continuous";
+      }
+    }
+
+    if (caps.exposureMode && caps.exposureMode.includes("continuous")) {
+      adv.exposureMode = "continuous";
+    }
+    if (caps.whiteBalanceMode && caps.whiteBalanceMode.includes("continuous")) {
+      adv.whiteBalanceMode = "continuous";
+    }
+
+    if (Object.keys(adv).length > 0) {
+      await track.applyConstraints({ advanced: [adv] });
+    }
+  } catch (e) {
+    console.warn("Camera optimization warning:", e);
+  }
+}
+
+// ---------- High-Speed Scan Loop (requestVideoFrameCallback + Center Crop) ----------
+function scheduleNextScan() {
+  if ("requestVideoFrameCallback" in video) {
+    video.requestVideoFrameCallback(scanFrame);
+  } else {
+    requestAnimationFrame(scanFrame);
+  }
+}
+
+async function scanFrame() {
+  scheduleNextScan();
   if (isPaused || scanningBusy || video.readyState < 2) return;
 
   // Track camera stream FPS
@@ -190,109 +219,54 @@ async function scanLoop() {
 
   scanningBusy = true;
   try {
-    // Fix 4: Orientation Check (Portrait vs Landscape)
-    // Always align the horizontal slice with the 2 side-by-side QR codes on PC
-    let roiX, roiY, roiW, roiH;
+    // 3. Center ROI Crop (70% of shortest edge, matching .scan-reticle)
+    const cropSize = Math.floor(Math.min(vw, vh) * 0.70);
+    const sx = Math.floor((vw - cropSize) / 2);
+    const sy = Math.floor((vh - cropSize) / 2);
 
-    if (vh > vw) {
-      // Phone held in portrait mode (stream is tall, e.g. 720x1280)
-      // Horizontal axis across phone screen is X axis (0 to vw)
-      roiW = vw;
-      roiH = Math.floor(vw * 0.65); // Horizontal band in center
-      roiX = 0;
-      roiY = Math.floor((vh - roiH) / 2);
-    } else {
-      // Phone held in landscape mode (stream is wide, e.g. 1280x720)
-      roiH = Math.floor(vh * 0.75);
-      roiW = Math.min(vw, Math.floor(roiH * 1.8)); // 1.8:1 aspect ratio covering both QR codes
-      roiX = Math.floor((vw - roiW) / 2);
-      roiY = Math.floor((vh - roiH) / 2);
+    const TARGET_SIZE = 480;
+    if (cropCanvas.width !== TARGET_SIZE || cropCanvas.height !== TARGET_SIZE) {
+      cropCanvas.width = TARGET_SIZE;
+      cropCanvas.height = TARGET_SIZE;
     }
 
-    // Fix 3: Overlapping ROI Slicing (60% / 60%)
-    // canvasLeft: 0% to 60% of ROI width
-    const sliceW_L = Math.floor(roiW * 0.6);
-    const sx_L = roiX;
+    // Hardware draw to hidden DOM canvas
+    cropCtx.drawImage(video, sx, sy, cropSize, cropSize, 0, 0, TARGET_SIZE, TARGET_SIZE);
 
-    // canvasRight: 40% to 100% of ROI width (60% width)
-    const sliceW_R = Math.floor(roiW * 0.6);
-    const sx_R = roiX + Math.floor(roiW * 0.4);
+    let barcodes = [];
 
-    // Fix 2: Standard HTML DOM <canvas> dimensions (avoids Android zero-copy black textures)
-    const TARGET_W = 480;
-    const TARGET_H = Math.max(1, Math.floor(TARGET_W * (roiH / sliceW_L)));
-
-    if (canvasLeft.width !== TARGET_W || canvasLeft.height !== TARGET_H) {
-      canvasLeft.width = TARGET_W;
-      canvasLeft.height = TARGET_H;
-    }
-    if (canvasRight.width !== TARGET_W || canvasRight.height !== TARGET_H) {
-      canvasRight.width = TARGET_W;
-      canvasRight.height = TARGET_H;
-    }
-
-    ctxLeft.drawImage(video, sx_L, roiY, sliceW_L, roiH, 0, 0, TARGET_W, TARGET_H);
-    ctxRight.drawImage(video, sx_R, roiY, sliceW_R, roiH, 0, 0, TARGET_W, TARGET_H);
-
-    // Fix 1: Sequential Await (NO Promise.all to prevent Mojo IPC congestion on Android Chrome)
-    let codesLeft = [];
-    let codesRight = [];
-
-    if (detectorLeft && detectorRight) {
+    if (barcodeDetector) {
       try {
-        // Sequential call 1: Left
-        codesLeft = await detectorLeft.detect(canvasLeft);
-      } catch (errLeft) {
-        console.warn("Left BarcodeDetector error:", errLeft);
-      }
-
-      try {
-        // Sequential call 2: Right (called after Left finishes)
-        codesRight = await detectorRight.detect(canvasRight);
-      } catch (errRight) {
-        console.warn("Right BarcodeDetector error:", errRight);
+        barcodes = await barcodeDetector.detect(cropCanvas);
+      } catch (detErr) {
+        console.warn("BarcodeDetector error:", detErr);
       }
     } else if (typeof ZXingWASM !== "undefined" && ZXingWASM.readBarcodesFromImageData) {
-      // Fallback WASM sequential
       try {
-        const imgL = ctxLeft.getImageData(0, 0, TARGET_W, TARGET_H);
-        const resL = await ZXingWASM.readBarcodesFromImageData(imgL, { formats: ["QRCode"] });
-        if (resL && resL.length > 0) codesLeft = resL.map((r) => ({ rawValue: r.text }));
-      } catch (e) {}
-
-      try {
-        const imgR = ctxRight.getImageData(0, 0, TARGET_W, TARGET_H);
-        const resR = await ZXingWASM.readBarcodesFromImageData(imgR, { formats: ["QRCode"] });
-        if (resR && resR.length > 0) codesRight = resR.map((r) => ({ rawValue: r.text }));
+        const imgData = cropCtx.getImageData(0, 0, TARGET_SIZE, TARGET_SIZE);
+        const res = await ZXingWASM.readBarcodesFromImageData(imgData, { formats: ["QRCode"] });
+        if (res && res.length > 0) barcodes = res.map((r) => ({ rawValue: r.text }));
       } catch (e) {}
     } else if (typeof jsQR !== "undefined") {
-      // Fallback jsQR sequential
       try {
-        const imgL = ctxLeft.getImageData(0, 0, TARGET_W, TARGET_H);
-        const codeL = jsQR(imgL.data, TARGET_W, TARGET_H, { inversionAttempts: "dontInvert" });
-        if (codeL && codeL.data) codesLeft = [{ rawValue: codeL.data }];
-      } catch (e) {}
-
-      try {
-        const imgR = ctxRight.getImageData(0, 0, TARGET_W, TARGET_H);
-        const codeR = jsQR(imgR.data, TARGET_W, TARGET_H, { inversionAttempts: "dontInvert" });
-        if (codeR && codeR.data) codesRight = [{ rawValue: codeR.data }];
+        const imgData = cropCtx.getImageData(0, 0, TARGET_SIZE, TARGET_SIZE);
+        const code = jsQR(imgData.data, TARGET_SIZE, TARGET_SIZE, { inversionAttempts: "dontInvert" });
+        if (code && code.data) barcodes = [{ rawValue: code.data }];
       } catch (e) {}
     }
 
-    // Dispatch detected codes into Fountain pipeline
-    if (codesLeft && codesLeft.length > 0) {
-      for (const c of codesLeft) {
-        dispatchBarcode(c.rawValue);
+    if (barcodes && barcodes.length > 0) {
+      // 4. Lock focus once QR code is locked to prevent focus hunting at 15-24 FPS
+      if (!focusLocked) {
+        applyCameraOptimizations(true);
       }
-    }
-    if (codesRight && codesRight.length > 0) {
-      for (const c of codesRight) {
-        dispatchBarcode(c.rawValue);
+
+      for (const b of barcodes) {
+        dispatchBarcode(b.rawValue);
       }
     }
   } catch (err) {
-    console.warn("Scan loop error:", err);
+    console.warn("scanFrame error:", err);
   } finally {
     scanningBusy = false;
   }

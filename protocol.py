@@ -132,8 +132,9 @@ class PacketProtocol:
         orig_sha256 = hashlib.sha256(raw).hexdigest().upper()
         file_id = orig_md5[:8]
 
-        # Only keep compression when it really helps (saves phone CPU as well)
-        comp = zlib.compress(raw, level=9)
+        # Deflate-raw (RFC 1951 without zlib header) for native DecompressionStream compatibility
+        compressor = zlib.compressobj(level=9, method=zlib.DEFLATED, wbits=-15)
+        comp = compressor.compress(raw) + compressor.flush()
         if len(comp) < len(raw) * 0.98:
             payload, z = comp, 1
         else:

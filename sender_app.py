@@ -28,7 +28,7 @@ def _safe_poly_mod(self, other):
     return _orig_poly_mod(self, other)
 qrcode.base.Polynomial.__mod__ = _safe_poly_mod
 
-from protocol import PacketProtocol, make_droplet_packet
+from protocol import PacketProtocol, make_droplet_packet, META_EVERY
 from server import ScannerWebServer, get_local_ip
 
 def get_app_dir():
@@ -68,9 +68,10 @@ class AirGapSenderGUI:
         self.is_transmitting = False
         self.current_frame_idx = 0
         self.loop_count = 1
-        self.fps = 14
+        self.fps = 15
         self.grid_mode = "1x1"  # "1x1", "1x2", or "2x2"
         self._chunk_after = None
+        self._tick_after = None
         self._prep_token = 0
         self._prep_state = None
         self.showing_connect_qr = False
@@ -205,57 +206,57 @@ class AirGapSenderGUI:
         preset_box.pack(fill=tk.X, pady=(0, 8))
 
         self.btn_preset_std = tk.Button(
-            preset_box, text="🐢 Chuẩn\n~6 KB/s", font=("Segoe UI", 7),
+            preset_box, text="🐢 Chuẩn\n~4.5 KB/s", font=("Segoe UI", 7),
             bg="#232f48", fg="#f0f4fc", relief="flat", cursor="hand2", padx=1, pady=3,
-            command=lambda: self._apply_preset(800, 10)
+            command=lambda: self._apply_preset(450, 10)
         )
         self.btn_preset_std.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
 
         self.btn_preset_fast = tk.Button(
-            preset_box, text="🚀 Nhanh\n~12 KB/s", font=("Segoe UI", 7, "bold"),
+            preset_box, text="🚀 Nhanh\n~9 KB/s", font=("Segoe UI", 7, "bold"),
             bg="#0072ff", fg="white", relief="flat", cursor="hand2", padx=1, pady=3,
-            command=lambda: self._apply_preset(1100, 14)
+            command=lambda: self._apply_preset(600, 15)
         )
         self.btn_preset_fast.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
 
         self.btn_preset_turbo = tk.Button(
-            preset_box, text="⚡ Siêu tốc\n~20 KB/s", font=("Segoe UI", 7, "bold"),
+            preset_box, text="⚡ Siêu tốc\n~14 KB/s", font=("Segoe UI", 7, "bold"),
             bg="#232f48", fg="#ffb800", relief="flat", cursor="hand2", padx=1, pady=3,
-            command=lambda: self._apply_preset(1400, 18)
+            command=lambda: self._apply_preset(750, 18)
         )
         self.btn_preset_turbo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=1)
 
         self.btn_preset_max = tk.Button(
-            preset_box, text="🏎️ Thần tốc\n~28 KB/s", font=("Segoe UI", 7, "bold"),
+            preset_box, text="🏎️ Thần tốc\n~22 KB/s", font=("Segoe UI", 7, "bold"),
             bg="#232f48", fg="#00e676", relief="flat", cursor="hand2", padx=1, pady=3,
-            command=lambda: self._apply_preset(1650, 20)
+            command=lambda: self._apply_preset(900, 24)
         )
         self.btn_preset_max.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(2, 0))
 
-        # FPS Slider
+        # FPS Slider (8 to 24 FPS)
         fps_box = tk.Frame(settings_frame, bg="#151c2c")
         fps_box.pack(fill=tk.X, pady=4)
         self.lbl_fps = tk.Label(fps_box, text=f"Tốc độ phát: {self.fps} FPS", fg="#f0f4fc", bg="#151c2c", font=("Segoe UI", 9))
         self.lbl_fps.pack(side=tk.LEFT)
         self.slider_fps = tk.Scale(
-            settings_frame, from_=2, to=30, orient=tk.HORIZONTAL,
+            settings_frame, from_=8, to=24, orient=tk.HORIZONTAL,
             bg="#151c2c", fg="white", highlightthickness=0,
             command=self._on_fps_change
         )
         self.slider_fps.set(self.fps)
         self.slider_fps.pack(fill=tk.X, pady=(0, 8))
 
-        # Chunk Size Slider
+        # Chunk Size Slider (400 to 900 bytes)
         chunk_box = tk.Frame(settings_frame, bg="#151c2c")
         chunk_box.pack(fill=tk.X, pady=4)
-        self.lbl_chunk_size = tk.Label(chunk_box, text="Kích thước mảnh: 1100 bytes", fg="#f0f4fc", bg="#151c2c", font=("Segoe UI", 9))
+        self.lbl_chunk_size = tk.Label(chunk_box, text="Kích thước mảnh: 600 bytes", fg="#f0f4fc", bg="#151c2c", font=("Segoe UI", 9))
         self.lbl_chunk_size.pack(side=tk.LEFT)
         self.slider_chunk = tk.Scale(
-            settings_frame, from_=300, to=2000, resolution=50, orient=tk.HORIZONTAL,
+            settings_frame, from_=400, to=900, resolution=25, orient=tk.HORIZONTAL,
             bg="#151c2c", fg="white", highlightthickness=0,
             command=self._on_chunk_change
         )
-        self.slider_chunk.set(1100)
+        self.slider_chunk.set(600)
         self.slider_chunk.pack(fill=tk.X, pady=(0, 4))
 
         btn_auto_chunk = tk.Button(
@@ -428,11 +429,11 @@ class AirGapSenderGUI:
         self.slider_chunk.set(chunk_size)
 
     def _on_auto_optimize_chunks(self):
-        """Pick a chunk size giving roughly 25-30 data frames (sweet spot for high-speed phone scanning)."""
+        """Pick a chunk size giving roughly 20-30 data frames (sweet spot for high-speed phone scanning)."""
         if not self.file_info:
             return
-        optimal = max(600, min(1500, int(self.file_info["compressed_size"] / 25)))
-        optimal = (optimal // 50) * 50
+        optimal = max(400, min(900, int(self.file_info["compressed_size"] / 25)))
+        optimal = (optimal // 25) * 25
         self.slider_chunk.set(optimal)  # triggers the debounced rebuild
 
     def _on_mode_change(self, event=None):
@@ -472,13 +473,22 @@ class AirGapSenderGUI:
         self._chunk_after = None
         if not self.current_file_path:
             return
+        was_transmitting = self.is_transmitting
+        self.is_transmitting = False
+        if self._tick_after:
+            self.root.after_cancel(self._tick_after)
+            self._tick_after = None
+
         self._prep_token += 1
         token = self._prep_token
-        self.is_transmitting = False
         self.packets = []
         self.qr_cache = {}
-        self.btn_start.config(text="▶️ Bắt Đầu Quét", bg="#00e676", state=tk.DISABLED)
-        self.lbl_status.config(text="Đang nạp file...", fg="#ffb800")
+
+        if not was_transmitting:
+            self.btn_start.config(text="▶️ Bắt Đầu Quét", bg="#00e676", state=tk.DISABLED)
+            self.lbl_status.config(text="Đang nạp file...", fg="#ffb800")
+        else:
+            self.lbl_status.config(text="⚡ Đang tính toán lại mảnh...", fg="#ffb800")
 
         chunk_size = int(self.slider_chunk.get())
         path = self.current_file_path
@@ -507,7 +517,7 @@ class AirGapSenderGUI:
                     self.lbl_file_name.config(text=f"Tệp: {info['file_name']}")
                     self.lbl_orig_size.config(text=f"Kích thước gốc: {self._format_bytes(info['orig_size'])}")
                     ratio = (1 - info["compressed_size"] / max(1, info["orig_size"])) * 100
-                    note = "nén zlib" if info["compressed"] else "không nén (dữ liệu đã nén sẵn)"
+                    note = "nén raw" if info["compressed"] else "không nén (dữ liệu đã nén sẵn)"
                     self.lbl_comp_size.config(
                         text=f"Dữ liệu gửi: {self._format_bytes(info['compressed_size'])} ({note}, {ratio:+.1f}%)"
                     )
@@ -516,10 +526,21 @@ class AirGapSenderGUI:
                     )
                     self.lbl_md5.config(text=f"MD5: {info['orig_md5']}")
                     self.btn_start.config(state=tk.NORMAL)
-                    self.lbl_status.config(text="Đã sẵn sàng. Nhấn Bắt Đầu để truyền!", fg="#00e676")
-                    self.current_frame_idx = 0
-                    self.loop_count = 1
-                    self._display_current_frame()
+
+                    if was_transmitting:
+                        self.is_transmitting = True
+                        self.btn_start.config(text="⏹️ TẠM DỪNG", bg="#ff3860")
+                        self.lbl_status.config(text=f"Đang phát luồng dữ liệu... ({self.grid_mode})", fg="#00f0ff")
+                        self.current_frame_idx = 0
+                        self.loop_count = 1
+                        self._transmission_tick()
+                    else:
+                        self.is_transmitting = False
+                        self.btn_start.config(text="▶️ Bắt Đầu Quét", bg="#00e676")
+                        self.lbl_status.config(text="Đã sẵn sàng. Nhấn Bắt Đầu để truyền!", fg="#00e676")
+                        self.current_frame_idx = 0
+                        self.loop_count = 1
+                        self._display_current_frame()
 
                     # 3. Background prefetcher with 6ms sleep so GUI stays at 120 FPS buttery smooth
                     def prefetch_loop():
@@ -555,6 +576,9 @@ class AirGapSenderGUI:
             self._transmission_tick()
         else:
             self.is_transmitting = False
+            if self._tick_after:
+                self.root.after_cancel(self._tick_after)
+                self._tick_after = None
             self.btn_start.config(text="▶️ TIẾP TỤC", bg="#00e676")
             self.lbl_status.config(text="Đã tạm dừng", fg="#ffb800")
 
@@ -576,11 +600,11 @@ class AirGapSenderGUI:
         while idx >= len(self.packets):
             next_idx = len(self.packets)
             # Inject metadata packet periodically so newly connecting scanners catch it immediately
-            if next_idx % 25 == 0 and meta_pkt:
+            if next_idx % META_EVERY == 0 and meta_pkt:
                 self.packets.append(meta_pkt)
             else:
                 # Droplet index (subtracting injected meta frames)
-                droplet_idx = next_idx - (next_idx // 25)
+                droplet_idx = next_idx - (next_idx // META_EVERY)
                 pkt = make_droplet_packet(file_id, blocks, k, size, droplet_idx)
                 self.packets.append(pkt)
 
@@ -599,11 +623,12 @@ class AirGapSenderGUI:
         return img
 
     def _transmission_tick(self):
+        self._tick_after = None
         if not self.is_transmitting:
             return
         self._display_current_frame()
         self.current_frame_idx += self._frames_per_view()
-        self.root.after(max(10, int(1000 / self.fps)), self._transmission_tick)
+        self._tick_after = self.root.after(max(10, int(1000 / self.fps)), self._transmission_tick)
 
     def _display_current_frame(self):
         if not self.packets or not self.file_info:
