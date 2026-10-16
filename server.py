@@ -74,6 +74,10 @@ def ensure_ssl_cert(cert_dir: str) -> tuple[str, str]:
     return cert_file, key_file
 
 class QRTransferHandler(SimpleHTTPRequestHandler):
+    extensions_map = SimpleHTTPRequestHandler.extensions_map.copy()
+    extensions_map['.wasm'] = 'application/wasm'
+    extensions_map['.js'] = 'application/javascript'
+
     def __init__(self, *args, directory=None, **kwargs):
         super().__init__(*args, directory=directory, **kwargs)
 

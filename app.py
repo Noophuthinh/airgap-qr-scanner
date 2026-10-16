@@ -2,8 +2,11 @@
 Flask server for deploying Web Scanner & VirusTotal proxy to Render (or any cloud host).
 """
 import os
+import mimetypes
 import requests
 from flask import Flask, send_from_directory, request, jsonify
+
+mimetypes.add_type('application/wasm', '.wasm')
 
 app = Flask(__name__, static_folder="web_scanner")
 
