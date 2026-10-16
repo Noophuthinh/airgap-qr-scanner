@@ -91,7 +91,6 @@ const cropCtx = cropCanvas.getContext("2d", { willReadFrequently: true });
 
 let barcodeDetector = null;
 let scanningBusy = false;
-let focusLocked = false;
 
 // ---------- Initialization ----------
 async function initScanner() {
@@ -114,6 +113,14 @@ async function initScanner() {
 
   await startCamera(currentFacingMode);
   scheduleNextScan();
+
+  // Tap-to-focus on camera viewfinder
+  const wrapper = document.querySelector(".video-wrapper");
+  if (wrapper) {
+    wrapper.addEventListener("click", () => {
+      triggerAutoFocus();
+    });
+  }
 }
 
 function initWorker() {
@@ -134,30 +141,29 @@ function initWorker() {
 async function startCamera(facingMode) {
   if (videoStream) videoStream.getTracks().forEach((t) => t.stop());
   torchOn = false;
-  focusLocked = false;
   if (btnTorch) btnTorch.innerText = "💡 Bật Đèn";
 
   try {
+    // 1080p standard camera stream allows native Continuous AutoFocus (CAF / PDAF)
     videoStream = await navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: { ideal: facingMode },
-        width: { ideal: 1280 },
-        height: { ideal: 720 },
-        frameRate: { ideal: 60, min: 30 },
+        width: { ideal: 1920, min: 1280 },
+        height: { ideal: 1080, min: 720 },
       },
       audio: false,
     });
     video.srcObject = videoStream;
     await video.play();
 
-    // Initial continuous focus & exposure
-    await applyCameraOptimizations(false);
+    // Ensure continuous autofocus without locking
+    await triggerAutoFocus();
   } catch (err) {
     alert("Không thể truy cập Camera: " + err.message);
   }
 }
 
-async function applyCameraOptimizations(lockFocusDistance = false) {
+async function triggerAutoFocus() {
   if (!videoStream) return;
   const track = videoStream.getVideoTracks()[0];
   if (!track) return;
@@ -165,32 +171,21 @@ async function applyCameraOptimizations(lockFocusDistance = false) {
   try {
     const caps = track.getCapabilities ? track.getCapabilities() : {};
     const adv = {};
-
-    if (caps.focusMode) {
-      if (lockFocusDistance && caps.focusMode.includes("manual")) {
-        adv.focusMode = "manual";
-        focusLocked = true;
-      } else if (caps.focusMode.includes("continuous")) {
-        adv.focusMode = "continuous";
-      }
+    if (caps.focusMode && caps.focusMode.includes("continuous")) {
+      adv.focusMode = "continuous";
     }
-
     if (caps.exposureMode && caps.exposureMode.includes("continuous")) {
       adv.exposureMode = "continuous";
     }
-    if (caps.whiteBalanceMode && caps.whiteBalanceMode.includes("continuous")) {
-      adv.whiteBalanceMode = "continuous";
-    }
-
     if (Object.keys(adv).length > 0) {
       await track.applyConstraints({ advanced: [adv] });
     }
   } catch (e) {
-    console.warn("Camera optimization warning:", e);
+    console.warn("Autofocus warning:", e);
   }
 }
 
-// ---------- High-Speed Scan Loop (requestVideoFrameCallback + Center Crop) ----------
+// ---------- High-Speed Scan Loop (requestVideoFrameCallback + Full-Res GPU Detector) ----------
 function scheduleNextScan() {
   if ("requestVideoFrameCallback" in video) {
     video.requestVideoFrameCallback(scanFrame);
@@ -219,48 +214,44 @@ async function scanFrame() {
 
   scanningBusy = true;
   try {
-    // 3. Center ROI Crop (70% of shortest edge, matching .scan-reticle)
-    const cropSize = Math.floor(Math.min(vw, vh) * 0.70);
-    const sx = Math.floor((vw - cropSize) / 2);
-    const sy = Math.floor((vh - cropSize) / 2);
-
-    const TARGET_SIZE = 480;
-    if (cropCanvas.width !== TARGET_SIZE || cropCanvas.height !== TARGET_SIZE) {
-      cropCanvas.width = TARGET_SIZE;
-      cropCanvas.height = TARGET_SIZE;
-    }
-
-    // Hardware draw to hidden DOM canvas
-    cropCtx.drawImage(video, sx, sy, cropSize, cropSize, 0, 0, TARGET_SIZE, TARGET_SIZE);
-
     let barcodes = [];
 
     if (barcodeDetector) {
       try {
-        barcodes = await barcodeDetector.detect(cropCanvas);
+        // Native GPU BarcodeDetector processes the high-res video frame directly
+        barcodes = await barcodeDetector.detect(video);
       } catch (detErr) {
         console.warn("BarcodeDetector error:", detErr);
       }
-    } else if (typeof ZXingWASM !== "undefined" && ZXingWASM.readBarcodesFromImageData) {
-      try {
-        const imgData = cropCtx.getImageData(0, 0, TARGET_SIZE, TARGET_SIZE);
-        const res = await ZXingWASM.readBarcodesFromImageData(imgData, { formats: ["QRCode"] });
-        if (res && res.length > 0) barcodes = res.map((r) => ({ rawValue: r.text }));
-      } catch (e) {}
-    } else if (typeof jsQR !== "undefined") {
-      try {
-        const imgData = cropCtx.getImageData(0, 0, TARGET_SIZE, TARGET_SIZE);
-        const code = jsQR(imgData.data, TARGET_SIZE, TARGET_SIZE, { inversionAttempts: "dontInvert" });
-        if (code && code.data) barcodes = [{ rawValue: code.data }];
-      } catch (e) {}
+    } else {
+      // Fallback for software decoders: crop center 75% at crisp resolution
+      const cropSize = Math.floor(Math.min(vw, vh) * 0.75);
+      const sx = Math.floor((vw - cropSize) / 2);
+      const sy = Math.floor((vh - cropSize) / 2);
+      const TARGET_SIZE = Math.min(640, cropSize);
+
+      if (cropCanvas.width !== TARGET_SIZE || cropCanvas.height !== TARGET_SIZE) {
+        cropCanvas.width = TARGET_SIZE;
+        cropCanvas.height = TARGET_SIZE;
+      }
+      cropCtx.drawImage(video, sx, sy, cropSize, cropSize, 0, 0, TARGET_SIZE, TARGET_SIZE);
+
+      if (typeof ZXingWASM !== "undefined" && ZXingWASM.readBarcodesFromImageData) {
+        try {
+          const imgData = cropCtx.getImageData(0, 0, TARGET_SIZE, TARGET_SIZE);
+          const res = await ZXingWASM.readBarcodesFromImageData(imgData, { formats: ["QRCode"] });
+          if (res && res.length > 0) barcodes = res.map((r) => ({ rawValue: r.text }));
+        } catch (e) {}
+      } else if (typeof jsQR !== "undefined") {
+        try {
+          const imgData = cropCtx.getImageData(0, 0, TARGET_SIZE, TARGET_SIZE);
+          const code = jsQR(imgData.data, TARGET_SIZE, TARGET_SIZE, { inversionAttempts: "dontInvert" });
+          if (code && code.data) barcodes = [{ rawValue: code.data }];
+        } catch (e) {}
+      }
     }
 
     if (barcodes && barcodes.length > 0) {
-      // 4. Lock focus once QR code is locked to prevent focus hunting at 15-24 FPS
-      if (!focusLocked) {
-        applyCameraOptimizations(true);
-      }
-
       for (const b of barcodes) {
         dispatchBarcode(b.rawValue);
       }
