@@ -7,7 +7,7 @@ from flask import Flask, send_from_directory, request, jsonify
 
 app = Flask(__name__, static_folder="web_scanner")
 
-DEFAULT_VT_API_KEY = os.environ.get("VT_API_KEY", "")
+DEFAULT_VT_API_KEY = os.environ.get("VT_API_KEY", "bb399d36d337a2b0137f4b47eca48ceaa3f477eff611af03f3d1d31560ec152e")
 
 @app.route("/")
 def index():

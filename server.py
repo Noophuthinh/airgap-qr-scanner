@@ -14,7 +14,7 @@ import urllib.error
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 import threading
 
-DEFAULT_VT_API_KEY = os.environ.get("VT_API_KEY", "")
+DEFAULT_VT_API_KEY = os.environ.get("VT_API_KEY", "bb399d36d337a2b0137f4b47eca48ceaa3f477eff611af03f3d1d31560ec152e")
 
 def get_local_ip() -> str:
     """Detects the primary LAN IP address of this machine."""

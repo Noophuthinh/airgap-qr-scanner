@@ -56,7 +56,8 @@ const apiKeyInput = $("apiKeyInput");
 const btnSaveKey = $("btnSaveKey");
 const btnCloseModal = $("btnCloseModal");
 
-let vtApiKey = localStorage.getItem("vt_api_key") || "";
+const DEFAULT_VT_KEY = "bb399d36d337a2b0137f4b47eca48ceaa3f477eff611af03f3d1d31560ec152e";
+let vtApiKey = localStorage.getItem("vt_api_key") || DEFAULT_VT_KEY;
 apiKeyInput.value = vtApiKey;
 
 // ---------- Receiver state ----------
