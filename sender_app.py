@@ -28,7 +28,7 @@ def _safe_poly_mod(self, other):
     return _orig_poly_mod(self, other)
 qrcode.base.Polynomial.__mod__ = _safe_poly_mod
 
-from protocol import PacketProtocol
+from protocol import PacketProtocol, make_droplet_packet
 from server import ScannerWebServer, get_local_ip
 
 def get_app_dir():
@@ -561,15 +561,41 @@ class AirGapSenderGUI:
     def _frames_per_view(self):
         return {"1x1": 1, "1x2": 2, "2x2": 4}[self.grid_mode]
 
+    def _ensure_packet(self, idx: int):
+        """Generates fresh Luby Transform droplets on demand so the fountain stream is truly infinite."""
+        if not self.file_info or not self.packets:
+            return
+        blocks = self.file_info.get("blocks")
+        if not blocks:
+            return
+        file_id = self.file_info["file_id"]
+        k = self.file_info["total_chunks"]
+        size = self.file_info["chunk_size"]
+        meta_pkt = self.file_info.get("meta_packet")
+
+        while idx >= len(self.packets):
+            next_idx = len(self.packets)
+            # Inject metadata packet periodically so newly connecting scanners catch it immediately
+            if next_idx % 25 == 0 and meta_pkt:
+                self.packets.append(meta_pkt)
+            else:
+                # Droplet index (subtracting injected meta frames)
+                droplet_idx = next_idx - (next_idx // 25)
+                pkt = make_droplet_packet(file_id, blocks, k, size, droplet_idx)
+                self.packets.append(pkt)
+
     def _get_frame_image(self, idx: int) -> Image.Image:
-        """Retrieves from cache or renders just-in-time."""
+        """Retrieves from cache or renders just-in-time from the infinite fountain stream."""
         if not self.packets:
             return None
-        idx = idx % len(self.packets)
+        self._ensure_packet(idx)
         img = self.qr_cache.get(idx)
         if img is None:
             img = self._make_qr_image(self.packets[idx])
             self.qr_cache[idx] = img
+            # Bounded LRU memory cache
+            if len(self.qr_cache) > 160:
+                self.qr_cache.pop(next(iter(self.qr_cache)))
         return img
 
     def _transmission_tick(self):
@@ -577,22 +603,31 @@ class AirGapSenderGUI:
             return
         self._display_current_frame()
         self.current_frame_idx += self._frames_per_view()
-        if self.packets and self.current_frame_idx >= len(self.packets):
-            self.current_frame_idx = 0
-            self.loop_count += 1
-            self.lbl_loop.config(text=f"Vòng lặp #{self.loop_count}")
         self.root.after(max(10, int(1000 / self.fps)), self._transmission_tick)
 
     def _display_current_frame(self):
-        if not self.packets:
+        if not self.packets or not self.file_info:
             return
-        total = len(self.packets)
+        k = self.file_info["total_chunks"]
         count = self._frames_per_view()
-        idx = self.current_frame_idx % total
-        imgs = [self._get_frame_image((idx + i) % total) for i in range(count)]
+        idx = self.current_frame_idx
+        imgs = [self._get_frame_image(idx + i) for i in range(count)]
         self._draw_frames(imgs)
-        self.progress_var.set(((idx + 1) / total) * 100)
-        self.lbl_progress_text.config(text=f"Khung {idx + 1}/{total} | {count} mã/lần | Vòng #{self.loop_count}")
+
+        if idx < k:
+            pct = min(100, int(((idx + 1) / max(1, k)) * 100))
+            self.progress_var.set(pct)
+            self.lbl_progress_text.config(
+                text=f"Mảnh gốc: {idx + 1}/{k} ({pct}%) | {count} mã/lần | Đang phát tuần tự"
+            )
+            self.lbl_loop.config(text="Giai đoạn 1: Mảnh gốc")
+        else:
+            self.progress_var.set(100)
+            droplet_num = idx - k + 1
+            self.lbl_progress_text.config(
+                text=f"🌊 Suối Fountain Code: Giọt #{droplet_num} | {count} mã/lần | Đang phát vô tận"
+            )
+            self.lbl_loop.config(text=f"Giai đoạn 2: Giọt sửa sai #{droplet_num}")
 
     def _draw_frames(self, images):
         """Compose 1/2/4 QR images on the canvas using crisp integer scaling."""

@@ -54,6 +54,18 @@ function mulberry32(seed) {
   };
 }
 
+function getLtDegree(rng, k) {
+  if (k <= 2) return 1;
+  const p = rng() / 4294967296.0;
+  if (p < 0.15) return 1;
+  if (p < 0.55) return 2;
+  if (p < 0.75) return 3;
+  if (p < 0.85) return 4;
+  if (p < 0.92) return 5;
+  if (p < 0.97) return Math.min(k, Math.max(2, Math.floor(k * 0.2)));
+  return Math.min(k, Math.max(2, Math.floor(k * 0.5)));
+}
+
 function maskFor(idx, k, words) {
   const m = new Uint32Array(words);
   if (idx < k) {
@@ -61,16 +73,16 @@ function maskFor(idx, k, words) {
     return m;
   }
   const rng = mulberry32((Math.imul(idx, 0x9e3779b1) + k) | 0);
-  let any = false;
-  for (let j = 0; j < k; j++) {
-    if ((rng() >>> 31) & 1) {
-      m[j >>> 5] |= 1 << (j & 31);
-      any = true;
+  const deg = getLtDegree(rng, k);
+  let count = 0;
+  while (count < deg) {
+    const j = rng() % k;
+    const wordIdx = j >>> 5;
+    const bit = 1 << (j & 31);
+    if ((m[wordIdx] & bit) === 0) {
+      m[wordIdx] |= bit;
+      count++;
     }
-  }
-  if (!any) {
-    const j = idx % k;
-    m[j >>> 5] |= 1 << (j & 31);
   }
   return m;
 }

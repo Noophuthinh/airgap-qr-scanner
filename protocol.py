@@ -68,13 +68,37 @@ def mulberry32(seed: int):
     return nxt
 
 
+def get_lt_degree(rng, k: int) -> int:
+    """Robust Soliton degree distribution for Luby Transform."""
+    if k <= 2:
+        return 1
+    p = rng() / 4294967296.0
+    if p < 0.15:
+        return 1
+    elif p < 0.55:
+        return 2
+    elif p < 0.75:
+        return 3
+    elif p < 0.85:
+        return 4
+    elif p < 0.92:
+        return 5
+    elif p < 0.97:
+        return min(k, max(2, int(k * 0.2)))
+    else:
+        return min(k, max(2, int(k * 0.5)))
+
+
 def repair_mask(idx: int, k: int) -> List[int]:
-    """Indices of source blocks XORed into repair frame `idx` (idx >= k)."""
+    """Indices of source blocks XORed into repair frame `idx` (idx >= k) using LT codes."""
+    if k <= 1:
+        return [0]
     rng = mulberry32((idx * 0x9E3779B1 + k) & M32)
-    sel = [j for j in range(k) if (rng() >> 31) & 1]
-    if not sel:
-        sel = [idx % k]
-    return sel
+    deg = get_lt_degree(rng, k)
+    sel = set()
+    while len(sel) < deg:
+        sel.add(rng() % k)
+    return sorted(list(sel))
 
 
 def _xor_blocks(blocks: List[bytes], sel: List[int], size: int) -> bytes:
@@ -82,6 +106,15 @@ def _xor_blocks(blocks: List[bytes], sel: List[int], size: int) -> bytes:
     for j in sel:
         acc ^= int.from_bytes(blocks[j], "big")
     return acc.to_bytes(size, "big")
+
+
+def make_droplet_packet(file_id: str, blocks: List[bytes], k: int, size: int, idx: int) -> str:
+    """Generates an arbitrary droplet packet (systematic for idx < k, LT repair for idx >= k)."""
+    if idx < k:
+        payload = blocks[idx]
+    else:
+        payload = _xor_blocks(blocks, repair_mask(idx, k), size)
+    return f"Q2:{file_id}:{k:X}:{idx:X}:{b45encode(payload)}"
 
 
 class PacketProtocol:
@@ -114,14 +147,10 @@ class PacketProtocol:
         padded = payload + pad_bytes
         blocks = [padded[i * size:(i + 1) * size] for i in range(k)]
 
-        repair = max(10, k // 2)
+        repair = max(40, k)
         data_frames: List[str] = []
-        for idx in range(k):
-            data_frames.append(f"Q2:{file_id}:{k:X}:{idx:X}:{b45encode(blocks[idx])}")
-        for r in range(repair):
-            idx = k + r
-            blk = _xor_blocks(blocks, repair_mask(idx, k), size)
-            data_frames.append(f"Q2:{file_id}:{k:X}:{idx:X}:{b45encode(blk)}")
+        for idx in range(k + repair):
+            data_frames.append(make_droplet_packet(file_id, blocks, k, size, idx))
 
         meta = (
             f"Q2M:{file_id}:{k:X}:{payload_len:X}:{orig_size:X}:{z}:"
@@ -145,6 +174,8 @@ class PacketProtocol:
             "total_chunks": k,
             "chunk_size": size,
             "packets": packets,
+            "blocks": blocks,
+            "meta_packet": meta,
         }
 
 
